@@ -34,3 +34,7 @@ data/processed/*
 .DS_Store
 .vscode/
 .idea/
+
+# Local scraping profile + capture scratch (contain a logged-in session / personal feed)
+.voc-profile/
+.scratch/

@@ -175,6 +175,26 @@ class Browser:
             with contextlib.suppress(Exception):
                 page.close()
 
+    def get_json(self, url: str):
+        """GET ``url`` via the browser's request context and return parsed JSON.
+
+        Uses the browser's network stack (TLS fingerprint, headers, cookies), so
+        it succeeds against endpoints that block bare HTTP clients — e.g. Reddit's
+        ``.json`` API, which 403s plain ``httpx`` but serves the browser.
+        """
+        if self._context is None:  # pragma: no cover - misuse
+            raise ScrapeError("Browser must be used as a context manager")
+        try:
+            resp = self._context.request.get(url, timeout=self._timeout_ms)
+        except Exception as exc:
+            raise ScrapeError(f"failed to GET {url}: {exc}") from exc
+        if not resp.ok:
+            raise ScrapeError(f"GET {url} returned HTTP {resp.status}")
+        try:
+            return resp.json()
+        except Exception as exc:
+            raise ScrapeError(f"GET {url} did not return JSON: {exc}") from exc
+
     @staticmethod
     def _auto_scroll(page: object, max_scrolls: int) -> None:
         last_height = -1

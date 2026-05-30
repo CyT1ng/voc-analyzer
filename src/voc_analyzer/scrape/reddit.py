@@ -1,96 +1,122 @@
-"""Reddit scraper (Playwright against old.reddit.com, no API key).
+"""Reddit scraper (public ``.json`` API, no auth, no API key) — best-effort.
 
-old.reddit.com is server-rendered, so comments come back with stable
-``data-fullname`` ids and ISO timestamps — the cleanest of the platforms.
-Flow: search → first few post permalinks → each post's comments.
+Reddit's public ``.json`` endpoints return clean structured data (stable ids,
+scores, UTC timestamps) — far better than the JS-rendered HTML that
+`old.reddit.com` now redirects to. We fetch them through the browser
+(``Browser.get_json``) rather than bare ``httpx``.
+
+**Reliability caveat:** Reddit aggressively rate-limits/blocks automated access
+by IP. From datacenter / cloud / sandbox IPs every endpoint tends to return
+HTTP 403 (verified: bare HTTP, browser request context, and full page
+navigation all 403 from such IPs). From a residential IP it generally works.
+Because of this, Reddit is treated as **best-effort**: on a block, ``fetch``
+logs a warning and returns ``[]`` rather than failing the run.
+
+Flow: ``/search.json`` → first few post permalinks → each post's
+``{permalink}.json`` comment tree → unified ``Comment`` records.
+
+``post_permalinks`` / ``parse_comments`` are pure (JSON in, Comments out) and
+unit-tested against committed fixtures; ``fetch`` performs the live request.
+
+Note: Reddit's search dislikes long multi-word queries (a 4+ word phrase often
+returns 0 hits), but ``search.build`` always includes the bare product name,
+which matches — so per-product coverage is fine.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from urllib.parse import quote_plus, urljoin
 
-from bs4 import BeautifulSoup
-
 from voc_analyzer.integrate.schema import Comment
-from voc_analyzer.scrape._browser import Browser, ScrapeError, parse_count
+from voc_analyzer.scrape._browser import Browser, ScrapeError
+
+log = logging.getLogger(__name__)
 
 BASE = "https://old.reddit.com"
-SEARCH_URL = BASE + "/search?q={q}&sort=relevance&t=year"
-MAX_POSTS = 5
+SEARCH_URL = BASE + "/search.json?q={q}&sort=relevance&t=year&limit={limit}"
+MAX_POSTS = 6
+COMMENTS_PER_POST = 50
 
 
-def post_links(html: str, limit: int = MAX_POSTS) -> list[str]:
-    """Extract post permalinks from a search results page."""
-    soup = BeautifulSoup(html, "html.parser")
+def post_permalinks(search_json: dict, limit: int = MAX_POSTS) -> list[str]:
+    """Extract post permalinks from a parsed search-results listing."""
+    children = search_json.get("data", {}).get("children", [])
     links: list[str] = []
-    for anchor in soup.select("a.search-title[href], a.search-comments[href]"):
-        href = anchor.get("href")
-        if href and href not in links:
-            links.append(href)
+    for child in children:
+        if child.get("kind") != "t3":  # t3 = link/post
+            continue
+        permalink = child.get("data", {}).get("permalink")
+        if permalink and permalink not in links:
+            links.append(permalink)
         if len(links) >= limit:
             break
     return links
 
 
-def _timestamp(node) -> datetime:
-    time_el = node.select_one("time[datetime]")
-    if time_el and time_el.get("datetime"):
-        try:
-            return datetime.fromisoformat(time_el["datetime"])
-        except ValueError:
-            pass
-    return datetime.now(UTC)
+def _comment(data: dict) -> Comment | None:
+    body = (data.get("body") or "").strip()
+    if not body or body in ("[deleted]", "[removed]"):
+        return None
+    author = data.get("author")
+    if author in ("[deleted]", None, ""):
+        author = None
+    created = data.get("created_utc")
+    ts = datetime.fromtimestamp(created, tz=UTC) if created else datetime.now(UTC)
+    permalink = data.get("permalink")
+    url = urljoin(BASE, permalink) if permalink else BASE
+    return Comment(
+        source="reddit",
+        source_id=data.get("name") or data.get("id", ""),
+        text=body,
+        author=author,
+        timestamp=ts,
+        likes=data.get("score"),
+        url=url,
+    )
 
 
-def parse(html: str, source_url: str = "") -> list[Comment]:
-    """Parse a rendered old.reddit comment page into Comments."""
-    soup = BeautifulSoup(html, "html.parser")
+def parse_comments(post_json: list, limit: int = COMMENTS_PER_POST) -> list[Comment]:
+    """Parse a post's ``{permalink}.json`` payload (``[post, comments]``) into Comments.
+
+    Walks the comment tree (including nested replies) breadth-first, skipping
+    ``more`` placeholders and deleted/removed bodies.
+    """
+    if not isinstance(post_json, list) or len(post_json) < 2:
+        return []
     out: list[Comment] = []
-    for node in soup.select("div.thing.comment[data-fullname]"):
-        body = node.select_one("div.entry div.usertext-body .md, div.usertext-body .md")
-        if body is None:
+    queue = list(post_json[1].get("data", {}).get("children", []))
+    while queue and len(out) < limit:
+        child = queue.pop(0)
+        if child.get("kind") != "t1":  # skip "more" nodes etc.
             continue
-        text = body.get_text(" ", strip=True)
-        if not text or text == "[deleted]":
-            continue
-        fullname = node.get("data-fullname", "")
-        author = node.get("data-author") or None
-        if author in ("[deleted]", ""):
-            author = None
-        score_el = node.select_one(".score.unvoted")
-        likes = parse_count(score_el.get("title") or score_el.get_text()) if score_el else None
-        permalink = node.get("data-permalink")
-        url = urljoin(BASE, permalink) if permalink else source_url
-        out.append(
-            Comment(
-                source="reddit",
-                source_id=fullname,
-                text=text,
-                author=author,
-                timestamp=_timestamp(node),
-                likes=likes,
-                url=url,
-            )
-        )
+        data = child.get("data", {})
+        comment = _comment(data)
+        if comment is not None:
+            out.append(comment)
+        replies = data.get("replies")
+        if isinstance(replies, dict):
+            queue.extend(replies.get("data", {}).get("children", []))
     return out
 
 
 def fetch(query: str, limit: int = 100) -> Iterable[Comment]:
     collected: list[Comment] = []
     with Browser() as browser:
-        search_html = browser.render(
-            SEARCH_URL.format(q=quote_plus(query)),
-            wait_selector=".search-result-link, .search-title",
-        )
-        for link in post_links(search_html):
+        try:
+            search = browser.get_json(SEARCH_URL.format(q=quote_plus(query), limit=MAX_POSTS))
+        except ScrapeError as exc:
+            # Almost always an IP-level 403 block — best-effort, so don't fail the run.
+            log.warning("reddit search blocked (%s); returning no comments", exc)
+            return []
+        for permalink in post_permalinks(search):
             if len(collected) >= limit:
                 break
-            url = link if link.startswith("http") else urljoin(BASE, link)
             try:
-                html = browser.render(url, wait_selector="div.commentarea")
+                post = browser.get_json(f"{BASE}{permalink}.json?limit={COMMENTS_PER_POST}")
             except ScrapeError:
                 continue
-            collected.extend(parse(html, url))
+            collected.extend(parse_comments(post))
     return collected[:limit]

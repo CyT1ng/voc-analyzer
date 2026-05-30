@@ -42,10 +42,17 @@ class Comment:
 
 - **2026-05-28 — Scrape via Playwright, not platform APIs.** Avoids per-platform
   API keys/approval (TikTok/IG/X are paywalled or approval-gated). Each scraper
-  splits a pure `parse(html)` from the live `fetch()` so parsing is unit-tested
-  offline against HTML fixtures and CI needs no browser/network. YouTube +
-  Reddit (`old.reddit.com`) work without login; TikTok/IG/X are best-effort and
-  can use a logged-in `VOC_BROWSER_PROFILE`.
+  splits pure parsing from the live `fetch()` so parsing is unit-tested offline
+  against committed fixtures and CI needs no browser/network. YouTube works
+  without login (reliable). TikTok/IG/X are best-effort and can use a logged-in
+  `VOC_BROWSER_PROFILE`.
+- **2026-05-28 — Reddit uses the public `.json` API, fetched via the browser.**
+  `old.reddit.com` HTML is now a JS React UI with no stable selectors, so we
+  request `search.json`/`{permalink}.json` through Playwright's request context
+  (`Browser.get_json`) and parse JSON with pure `post_permalinks`/`parse_comments`.
+  Reddit rate-limits by IP: datacenter/CI/sandbox IPs get HTTP 403 on every
+  endpoint, residential IPs generally work — so Reddit is **best-effort** and
+  returns `[]` (with a warning) when blocked.
 - **2026-05-28 — Local NLP for analysis, LLM optional.** VADER for sentiment
   (pure-python, social-tuned, deterministic), frequency-based keywords, and
   day-bucketed trends. Report suggestions are rule-based by default; Anthropic

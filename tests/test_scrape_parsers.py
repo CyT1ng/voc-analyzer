@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,17 +20,34 @@ def test_youtube_parse_extracts_comments():
     assert "amazing" in first.text
 
 
-def test_reddit_parse_extracts_comments():
-    html = (SAMPLES / "reddit_comments.html").read_text(encoding="utf-8")
-    comments = reddit.parse(html)
-    # the [deleted] comment is skipped
-    assert len(comments) == 2
-    first = comments[0]
-    assert first.source_id == "t1_aaa"
+def test_reddit_post_permalinks_skips_non_posts():
+    search = json.loads((SAMPLES / "reddit_search.json").read_text(encoding="utf-8"))
+    links = reddit.post_permalinks(search)
+    # only the two t3 posts, not the t1 entry
+    assert links == [
+        "/r/headphones/comments/aaa/xm5_vs_bose/",
+        "/r/headphones/comments/bbb/anc_stopped/",
+    ]
+
+
+def test_reddit_parse_comments_walks_tree_and_skips_deleted():
+    post = json.loads((SAMPLES / "reddit_post.json").read_text(encoding="utf-8"))
+    comments = reddit.parse_comments(post)
+    # top-level aaa + bbb + nested reply aaa1; [deleted] and the "more" node are skipped
+    assert len(comments) == 3
+    ids = {c.source_id for c in comments}
+    assert ids == {"t1_aaa", "t1_aaa1", "t1_bbb"}
+    first = next(c for c in comments if c.source_id == "t1_aaa")
+    assert first.source == "reddit"
     assert first.author == "redditor1"
     assert first.likes == 84
-    assert first.timestamp.year == 2026
+    assert first.timestamp.year == 2025
     assert first.url.startswith("https://old.reddit.com/")
+
+
+def test_reddit_parse_comments_handles_empty():
+    assert reddit.parse_comments([]) == []
+    assert reddit.parse_comments([{}]) == []
 
 
 def test_parse_count_handles_suffixes():

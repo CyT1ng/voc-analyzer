@@ -21,11 +21,22 @@ MODEL = os.getenv("VOC_LLM_MODEL", "claude-opus-4-8")
 MAX_SUGGESTIONS = 8
 
 _SYSTEM = (
-    "You are a senior product analyst. You are given an aggregated "
-    "Voice-of-Customer analysis of social-media comments about a product. "
-    "Produce concise, concrete, actionable product-improvement suggestions, "
-    "each grounded in the data provided. Respond ONLY with a JSON array of short "
-    "suggestion strings — no prose, no markdown, no surrounding object."
+    "You are a senior product analyst writing for the product team that owns "
+    "this product. You are given an aggregated Voice-of-Customer analysis of "
+    "real social-media comments: sentiment, frequent keywords/phrases split by "
+    "sentiment, and verbatim quotes.\n\n"
+    "Identify the few DISTINCT underlying problems and strengths the data points "
+    "to — synthesize themes, do not just restate individual words. Lean on the "
+    "verbatim quotes: they reveal the specific issue behind a keyword (e.g. the "
+    "keyword 'anc' may hide a complaint about auto-ANC; 'hinge' may indicate a "
+    "structural defect compounded by warranty denials). A feature can be both a "
+    "strength and a pain point — say so when the data shows it.\n\n"
+    "Write 4-7 suggestions. Each must: name the concrete problem or opportunity, "
+    "ground it in the evidence (cite the phrase/keyword or paraphrase a quote), "
+    "and state a clear action. Order by apparent severity/frequency. Be specific "
+    "and honest about uncertainty when the signal is thin.\n\n"
+    "Respond ONLY with a JSON array of suggestion strings — no prose, no "
+    "markdown, no surrounding object."
 )
 
 
@@ -46,23 +57,37 @@ def _suggest_rule_based(analysis: dict) -> list[str]:
     distribution = sentiment.get("distribution", {})
     total = sentiment.get("count", 0)
     negative = distribution.get("negative", 0)
-    neg_keywords = analysis.get("keywords_by_sentiment", {}).get("negative", [])
-    pos_keywords = analysis.get("keywords_by_sentiment", {}).get("positive", [])
+    kbs = analysis.get("keywords_by_sentiment", {})
+    neg = kbs.get("negative", {})
+    pos = kbs.get("positive", {})
+    neg_phrases = neg.get("phrases", [])
+    neg_keywords = neg.get("keywords", [])
+    pos_phrases = pos.get("phrases", [])
+    pos_keywords = pos.get("keywords", [])
+
+    def _mentions(n: int) -> str:
+        return f"{n} mention" if n == 1 else f"{n} mentions"
 
     out: list[str] = []
-    for word, count in neg_keywords[:5]:
+    # Phrases are more specific than single words — surface them first.
+    for phrase, count in neg_phrases[:3]:
+        out.append(
+            f"Recurring complaint about “{phrase}” ({_mentions(count)} in negative "
+            f"comments) — investigate the root cause and address it."
+        )
+    for word, count in neg_keywords[: max(0, 5 - len(out))]:
         out.append(
             f"Users frequently raise “{word}” in negative comments "
-            f"({count} mentions) — investigate the root cause and address it."
+            f"({_mentions(count)}) — check the representative quotes for the specifics."
         )
     if total and negative / total > 0.3:
         out.append(
             f"Negative sentiment is elevated ({negative}/{total} comments); "
             "prioritize the complaints above before new features."
         )
-    if pos_keywords:
-        strengths = ", ".join(word for word, _ in pos_keywords[:3])
-        out.append(f"Preserve current strengths users praise: {strengths}.")
+    strengths = [p for p, _ in pos_phrases[:2]] + [w for w, _ in pos_keywords[:3]]
+    if strengths:
+        out.append(f"Preserve current strengths users praise: {', '.join(strengths[:3])}.")
     if not out:
         out.append(
             "No strong negative signal detected; keep monitoring and reinforce "
@@ -75,16 +100,29 @@ def _payload(analysis: dict) -> dict:
     """Compact projection of the analysis with only fields useful for suggestions."""
     sentiment = analysis.get("sentiment", {})
     representative = analysis.get("representative", {})
+    kbs = analysis.get("keywords_by_sentiment", {})
+
+    def _quotes(bucket: str) -> list[str]:
+        out = []
+        for q in representative.get(bucket, []):
+            likes = q.get("likes")
+            prefix = f"[{likes} likes] " if likes else ""
+            out.append(prefix + q["text"])
+        return out
+
     return {
         "product": analysis.get("product"),
-        "keywords": analysis.get("keywords"),
+        "keywords_searched": analysis.get("keywords"),
         "comments_analyzed": analysis.get("totals", {}).get("comments"),
+        "platforms": analysis.get("platforms"),
         "mean_sentiment": sentiment.get("mean"),
         "sentiment_distribution": sentiment.get("distribution"),
-        "negative_keywords": analysis.get("keywords_by_sentiment", {}).get("negative"),
-        "positive_keywords": analysis.get("keywords_by_sentiment", {}).get("positive"),
-        "negative_quotes": [q["text"] for q in representative.get("negative", [])],
-        "positive_quotes": [q["text"] for q in representative.get("positive", [])],
+        "negative_keywords": kbs.get("negative", {}).get("keywords"),
+        "negative_phrases": kbs.get("negative", {}).get("phrases"),
+        "positive_keywords": kbs.get("positive", {}).get("keywords"),
+        "positive_phrases": kbs.get("positive", {}).get("phrases"),
+        "negative_quotes": _quotes("negative"),
+        "positive_quotes": _quotes("positive"),
     }
 
 
@@ -102,10 +140,17 @@ def _suggest_llm(analysis: dict) -> list[str]:
     client = Anthropic()
     message = client.messages.create(
         model=MODEL,
-        max_tokens=1024,
+        max_tokens=2048,
         system=[{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[
-            {"role": "user", "content": json.dumps(_payload(analysis), ensure_ascii=False)}
+            {
+                "role": "user",
+                "content": (
+                    "Here is the Voice-of-Customer analysis. Return the JSON array "
+                    "of improvement suggestions.\n\n"
+                    + json.dumps(_payload(analysis), ensure_ascii=False, indent=2)
+                ),
+            }
         ],
     )
     text = "".join(b.text for b in message.content if getattr(b, "type", None) == "text")

@@ -96,9 +96,18 @@ def to_markdown(analysis: dict) -> str:
 
     lines.append("## Top keywords\n")
     lines.append(_keyword_line(analysis.get("top_keywords", [])) + "\n")
+    phrases = analysis.get("top_phrases", [])
+    if phrases:
+        lines.append(f"**Common phrases:** {_keyword_line(phrases)}\n")
     kbs = analysis.get("keywords_by_sentiment", {})
-    lines.append(f"- **In positive comments:** {_keyword_line(kbs.get('positive', []))}")
-    lines.append(f"- **In negative comments:** {_keyword_line(kbs.get('negative', []))}\n")
+    pos, neg = kbs.get("positive", {}), kbs.get("negative", {})
+    lines.append(f"- **In positive comments:** {_keyword_line(pos.get('keywords', []))}")
+    if pos.get("phrases"):
+        lines.append(f"  - phrases: {_keyword_line(pos.get('phrases', []))}")
+    lines.append(f"- **In negative comments:** {_keyword_line(neg.get('keywords', []))}")
+    if neg.get("phrases"):
+        lines.append(f"  - phrases: {_keyword_line(neg.get('phrases', []))}")
+    lines.append("")
 
     _trend_section(lines, analysis)
     _quotes_section(lines, analysis)
