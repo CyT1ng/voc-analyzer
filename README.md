@@ -13,8 +13,10 @@ Input  ─►  Search  ─►  Scrape  ─►  Integrate  ─►  Analyze  ─�
 ```
 
 - **Scrape** uses **Playwright** (a headless browser) against public pages — no
-  platform API keys required. YouTube and Reddit work out of the box; TikTok /
-  Instagram / X are login-walled and best-effort (see `docs/platforms.md`).
+  platform API keys required. YouTube works out of the box; Reddit uses its
+  public `.json` API but is rate-limited by IP (often 403 from datacenter/CI
+  IPs, fine from residential); TikTok / Instagram / X are login-walled. All are
+  best-effort and degrade gracefully (see `docs/platforms.md`).
 - **Analyze** is local NLP: [VADER](https://github.com/cjhutto/vaderSentiment)
   sentiment, frequency-based keywords, and day-bucketed trends.
 - **Insight** is a Markdown report + `analysis.json`. Improvement suggestions are
@@ -33,9 +35,9 @@ uv run playwright install chromium
 # 4. (optional) Copy env template for runtime/LLM settings
 cp .env.example .env
 
-# 5a. Live run — scrape YouTube + Reddit for a product
+# 5a. Live run — scrape YouTube (most reliable path) for a product
 uv run voc-analyzer run -p "Sony WH-1000XM5" -k "noise cancelling" \
-    -P youtube -P reddit --limit 30
+    -P youtube --limit 60
 
 # 5b. Offline demo — analyze the committed sample comments
 uv run voc-analyzer run -p "Acme Buds" --from-raw data/samples/comments.jsonl

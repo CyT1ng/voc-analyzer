@@ -68,3 +68,66 @@ def test_suggest_falls_back_when_llm_errors(monkeypatch):
     monkeypatch.setattr(suggest, "_suggest_llm", boom)
     out = suggest.suggest(_analysis())
     assert out and "LLM idea" not in out
+
+
+def test_payload_includes_phrases_and_quotes():
+    payload = suggest._payload(_analysis())
+    assert "negative_phrases" in payload
+    assert "positive_phrases" in payload
+    assert "negative_quotes" in payload
+
+
+class _FakeBlock:
+    type = "text"
+
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeMessage:
+    def __init__(self, text):
+        self.content = [_FakeBlock(text)]
+
+
+def _install_fake_anthropic(monkeypatch, response_text):
+    """Inject a fake ``anthropic`` module so _suggest_llm runs without a real key.
+
+    Returns a dict capturing the kwargs passed to ``messages.create``.
+    """
+    import sys
+    import types
+
+    captured = {}
+
+    class _Messages:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeMessage(response_text)
+
+    class _Anthropic:
+        def __init__(self, *a, **k):
+            self.messages = _Messages()
+
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = _Anthropic
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    return captured
+
+
+def test_suggest_llm_parses_json_array(monkeypatch):
+    _install_fake_anthropic(monkeypatch, '["Fix the hinge", "Improve ANC auto mode"]')
+    out = suggest._suggest_llm(_analysis())
+    assert out == ["Fix the hinge", "Improve ANC auto mode"]
+
+
+def test_suggest_llm_strips_code_fences_and_unwraps_object(monkeypatch):
+    _install_fake_anthropic(monkeypatch, '```json\n{"suggestions": ["a", "b"]}\n```')
+    out = suggest._suggest_llm(_analysis())
+    assert out == ["a", "b"]
+
+
+def test_suggest_llm_sends_phrases_in_payload(monkeypatch):
+    captured = _install_fake_anthropic(monkeypatch, '["x"]')
+    suggest._suggest_llm(_analysis())
+    sent = captured["messages"][0]["content"]
+    assert "negative_phrases" in sent and "positive_quotes" in sent

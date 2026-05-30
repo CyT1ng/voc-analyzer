@@ -67,6 +67,7 @@ def build_analysis(
         "totals": {"comments": len(comments), "by_platform": dict(by_platform)},
         "sentiment": sentiment.summarize(comments),
         "top_keywords": keywords.extract(comments, top_k=top_k, extra_stopwords=extra_stop),
+        "top_phrases": keywords.extract_phrases(comments, extra_stopwords=extra_stop),
         "keywords_by_sentiment": keywords.extract_by_sentiment(
             comments, scores, extra_stopwords=extra_stop
         ),
