@@ -12,6 +12,14 @@ Input  ─►  Search  ─►  Scrape  ─►  Integrate  ─►  Analyze  ─�
 (product) (keywords) (per platform) (clean+unify) (NLP/LLM)  (report)
 ```
 
+- **Scrape** uses **Playwright** (a headless browser) against public pages — no
+  platform API keys required. YouTube and Reddit work out of the box; TikTok /
+  Instagram / X are login-walled and best-effort (see `docs/platforms.md`).
+- **Analyze** is local NLP: [VADER](https://github.com/cjhutto/vaderSentiment)
+  sentiment, frequency-based keywords, and day-bucketed trends.
+- **Insight** is a Markdown report + `analysis.json`. Improvement suggestions are
+  rule-based by default, or LLM-generated if an `ANTHROPIC_API_KEY` is set.
+
 ## Quick start
 
 ```bash
@@ -19,11 +27,31 @@ Input  ─►  Search  ─►  Scrape  ─►  Integrate  ─►  Analyze  ─�
 # 2. Sync dependencies
 uv sync
 
-# 3. Copy env template and fill in API keys
+# 3. Install the Chromium browser used for scraping (one-time)
+uv run playwright install chromium
+
+# 4. (optional) Copy env template for runtime/LLM settings
 cp .env.example .env
 
-# 4. Run the CLI (placeholder for now)
-uv run voc-analyzer --help
+# 5a. Live run — scrape YouTube + Reddit for a product
+uv run voc-analyzer run -p "Sony WH-1000XM5" -k "noise cancelling" \
+    -P youtube -P reddit --limit 30
+
+# 5b. Offline demo — analyze the committed sample comments
+uv run voc-analyzer run -p "Acme Buds" --from-raw data/samples/comments.jsonl
+```
+
+Output is written to `data/processed/report.md` and `data/processed/analysis.json`
+(override with `--output-dir`). Add `--no-llm` to force rule-based suggestions.
+
+### Scraping login-walled platforms
+
+TikTok, Instagram, and X gate content behind login/anti-bot. Point
+`VOC_BROWSER_PROFILE` at a Chromium profile already logged in to those sites:
+
+```bash
+VOC_HEADLESS=false VOC_BROWSER_PROFILE=~/.voc-profile \
+    uv run voc-analyzer run -p "Acme Buds" -P tiktok -P instagram -P x
 ```
 
 ## Layout
@@ -32,13 +60,23 @@ uv run voc-analyzer --help
 src/voc_analyzer/   # main package, one folder per pipeline stage
 docs/               # design docs and per-platform notes
 tests/              # mirrors src/ structure
-data/samples/       # tiny committed sample data
+data/samples/       # tiny committed sample data + HTML fixtures
 data/raw/           # scraped data (gitignored)
-data/processed/     # cleaned data (gitignored)
+data/processed/     # reports (gitignored)
 notebooks/          # exploration
 scripts/            # one-off helpers
 ```
 
+## Development
+
+```bash
+uv sync --extra dev          # dev tooling (pytest, ruff)
+uv run ruff check .          # lint
+uv run pytest                # unit tests (offline, no browser/network)
+uv run pytest -m integration # live scraper smoke tests (needs browser + network)
+```
+
 ## Status
 
-W1 — kickoff, repo skeleton. See [docs/0001-architecture.md](docs/0001-architecture.md).
+Pipeline implemented end-to-end (scrape → analyze → report). See
+[docs/0001-architecture.md](docs/0001-architecture.md).

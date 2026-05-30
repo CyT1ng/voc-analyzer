@@ -15,8 +15,37 @@ SAMPLES_DIR = DATA_DIR / "samples"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+# --- Scraping (Playwright) ---
+HEADLESS = _env_bool("VOC_HEADLESS", True)
+BROWSER_PROFILE = os.getenv("VOC_BROWSER_PROFILE") or None
+SCRAPE_TIMEOUT_MS = _env_int("VOC_SCRAPE_TIMEOUT_MS", 30_000)
+MAX_SCROLLS = _env_int("VOC_MAX_SCROLLS", 10)
+
+
 def require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def anthropic_enabled() -> bool:
+    """True if an Anthropic key is configured (enables LLM-generated suggestions)."""
+    return bool(os.getenv("ANTHROPIC_API_KEY"))
