@@ -5,6 +5,12 @@ Instagram once, then renders the live search/tag pages, saves the raw HTML to
 ``.scratch/`` (gitignored), and runs the package parsers against it so we can
 see exactly what comes back today.
 
+Because the profile is persistent, the login is reused on every later run: the
+script checks whether each site is already authenticated and only prompts you to
+log into the ones that aren't. Log in once and subsequent runs are hands-off —
+no passwords are ever stored, only the browser's own session cookies (in the
+gitignored profile dir).
+
 Usage::
 
     uv run python scripts/smoke_xig.py "sony wh-1000xm5"
@@ -34,6 +40,14 @@ CHANNEL = os.getenv("VOC_BROWSER_CHANNEL") or None
 SCRATCH = ROOT / ".scratch"
 TIMEOUT = 30_000
 MAX_SCROLLS = 10
+
+# Best-effort "are we already logged in?" probes. (home_url, logged-in selector,
+# login page to open if not). These selectors target the current public DOM and
+# may drift — if a probe wrongly reports logged-out, you just log in again.
+X_LOGIN = "https://x.com/login"
+X_PROBE = ("https://x.com/home", '[data-testid="SideNav_AccountSwitcher_Button"]')
+IG_LOGIN = "https://www.instagram.com/accounts/login/"
+IG_PROBE = ("https://www.instagram.com/", 'svg[aria-label="Home"], a[href="/explore/"]')
 
 
 def auto_scroll(page) -> None:
@@ -72,6 +86,25 @@ def report(label: str, html: str, comments, out: Path) -> None:
         print(f"   - {(c.author or '?')!s:>20} | {c.text[:90]}")
 
 
+def logged_in(context, home_url: str, ok_selector: str, timeout: int = 10_000) -> bool:
+    """Best-effort check: is the persistent session already authenticated for this site?
+
+    Navigates to the logged-in landing page and looks for a selector that only
+    appears when signed in. Conservative: anything ambiguous returns False, so we
+    fall back to prompting for a manual login rather than silently scraping a wall.
+    """
+    page = context.new_page()
+    try:
+        page.goto(home_url, wait_until="domcontentloaded")
+        try:
+            page.wait_for_selector(ok_selector, timeout=timeout)
+            return True
+        except Exception:  # noqa: BLE001 - probe only
+            return False
+    finally:
+        page.close()
+
+
 def main() -> None:
     query = sys.argv[1] if len(sys.argv) > 1 else "sony wh-1000xm5"
     SCRATCH.mkdir(exist_ok=True)
@@ -90,10 +123,22 @@ def main() -> None:
         )
         ctx.set_default_timeout(TIMEOUT)
 
-        ctx.new_page().goto("https://x.com/login")
-        ctx.new_page().goto("https://www.instagram.com/accounts/login/")
-        input("\n>>> Log into BOTH X and Instagram in the open tabs, then press ENTER "
-              "here to run the scrape...\n")
+        print("\nchecking existing session...")
+        checks = [
+            ("X", X_LOGIN, logged_in(ctx, *X_PROBE)),
+            ("Instagram", IG_LOGIN, logged_in(ctx, *IG_PROBE)),
+        ]
+        for name, _, ok in checks:
+            print(f"  {name}: {'already logged in' if ok else 'NOT logged in'}")
+        need = [(name, login) for name, login, ok in checks if not ok]
+        if need:
+            for _, login in need:
+                ctx.new_page().goto(login)
+            names = " and ".join(name for name, _ in need)
+            input(f"\n>>> Log into {names} in the open tab(s), then press ENTER "
+                  "here to run the scrape...\n")
+        else:
+            print("Both sessions already active — skipping login, scraping now.")
 
         x_url = x_scraper.SEARCH_URL.format(q=quote_plus(query))
         print(f"\n[X]  rendering {x_url}")
