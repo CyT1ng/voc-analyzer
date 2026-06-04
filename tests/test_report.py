@@ -77,6 +77,45 @@ def test_payload_includes_phrases_and_quotes():
     assert "negative_quotes" in payload
 
 
+def test_summarize_no_llm_returns_blank():
+    assert suggest.summarize(_analysis(), use_llm=False) == ""
+
+
+def test_summarize_empty_analysis_returns_blank():
+    assert suggest.summarize(build_analysis([], "Acme")) == ""
+
+
+def test_summarize_uses_llm_when_available(monkeypatch):
+    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(suggest, "_summarize_llm", lambda analysis: "Overall positive.")
+    assert suggest.summarize(_analysis()) == "Overall positive."
+
+
+def test_summarize_omits_on_llm_error(monkeypatch):
+    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+
+    def boom(analysis):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(suggest, "_summarize_llm", boom)
+    assert suggest.summarize(_analysis()) == ""
+
+
+def test_summarize_llm_sends_payload_and_returns_text(monkeypatch):
+    captured = _install_fake_anthropic(monkeypatch, "Solid sentiment overall.")
+    out = suggest._summarize_llm(_analysis())
+    assert out == "Solid sentiment overall."
+    assert "negative_phrases" in captured["messages"][0]["content"]
+
+
+def test_to_markdown_includes_summary_when_present():
+    analysis = _analysis()
+    analysis["summary"] = "Customers love the battery but hate the connection."
+    md = render.to_markdown(analysis)
+    assert "## Executive summary" in md
+    assert "love the battery" in md
+
+
 class _FakeBlock:
     type = "text"
 

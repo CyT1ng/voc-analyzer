@@ -39,6 +39,22 @@ _SYSTEM = (
     "markdown, no surrounding object."
 )
 
+_SUMMARY_SYSTEM = (
+    "You are a senior product analyst writing a short executive summary for the "
+    "product team that owns this product. You are given an aggregated "
+    "Voice-of-Customer analysis of real social-media comments: overall sentiment, "
+    "frequent keywords/phrases split by sentiment, and verbatim quotes.\n\n"
+    "Write 2-3 tight paragraphs (no headings, no bullet lists) a busy PM can read "
+    "in 20 seconds: the overall mood and what's driving it, the clearest "
+    "strengths, the clearest pain points, and — importantly — an honest caveat "
+    "about the data when warranted (thin volume, off-topic or creator-praise "
+    "noise, non-English comments, single-platform skew). Synthesize themes from "
+    "the evidence; paraphrase quotes rather than inventing specifics, and say so "
+    "plainly when the signal is too weak to conclude much.\n\n"
+    "Respond with plain prose (markdown allowed) — no preamble like 'Here is', no "
+    "JSON, no surrounding heading."
+)
+
 
 def suggest(analysis: dict, use_llm: bool = True) -> list[str]:
     """Return improvement suggestions for the given analysis dict."""
@@ -50,6 +66,23 @@ def suggest(analysis: dict, use_llm: bool = True) -> list[str]:
         except Exception as exc:  # network, parsing, missing dep — degrade gracefully
             log.warning("LLM suggestions failed (%s); using rule-based fallback", exc)
     return _suggest_rule_based(analysis)
+
+
+def summarize(analysis: dict, use_llm: bool = True) -> str:
+    """Return an LLM-written executive summary, or ``""`` when unavailable.
+
+    Unlike suggestions there is no rule-based fallback — a narrative summary is
+    inherently an LLM feature, so without a key (or on any error) the section is
+    simply omitted.
+    """
+    if analysis.get("totals", {}).get("comments", 0) == 0:
+        return ""
+    if use_llm and config.anthropic_enabled():
+        try:
+            return _summarize_llm(analysis)
+        except Exception as exc:  # network, parsing, missing dep — omit gracefully
+            log.warning("LLM summary failed (%s); omitting narrative summary", exc)
+    return ""
 
 
 def _suggest_rule_based(analysis: dict) -> list[str]:
@@ -158,3 +191,26 @@ def _suggest_llm(analysis: dict) -> list[str]:
     if isinstance(data, dict):
         data = data.get("suggestions", [])
     return [str(item) for item in data][:MAX_SUGGESTIONS]
+
+
+def _summarize_llm(analysis: dict) -> str:
+    from anthropic import Anthropic
+
+    client = Anthropic()
+    message = client.messages.create(
+        model=MODEL,
+        max_tokens=1024,
+        system=[{"type": "text", "text": _SUMMARY_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Here is the Voice-of-Customer analysis. Write the executive "
+                    "summary.\n\n" + json.dumps(_payload(analysis), ensure_ascii=False, indent=2)
+                ),
+            }
+        ],
+    )
+    return "".join(
+        b.text for b in message.content if getattr(b, "type", None) == "text"
+    ).strip()

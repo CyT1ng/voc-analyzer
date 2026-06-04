@@ -61,7 +61,10 @@ Linear pipeline, one package subfolder per stage. Data flows:
 - **`report/`** — `render.write_report(analysis, out_dir) -> (md_path, json_path)`;
   `suggest.suggest(analysis, use_llm)` returns improvement suggestions, **rule-based by default**,
   switching to Claude only when `ANTHROPIC_API_KEY` is set, with graceful fallback to rule-based
-  on any LLM error.
+  on any LLM error. `suggest.summarize(analysis, use_llm)` adds an LLM-written **Executive
+  summary** (prose) at the top of the report — LLM-only, omitted (returns `""`) without a key.
+  Both are set in `cli.py` onto `analysis["suggestions"]`/`["summary"]`; the rest of the report
+  (sentiment, keywords, trends, quotes) is always computed locally.
 
 ### Cross-file invariant
 
