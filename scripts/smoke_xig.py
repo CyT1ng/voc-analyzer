@@ -1,9 +1,15 @@
-"""Interactive smoke test for the X + Instagram scrapers.
+"""Interactive smoke test for the X, Instagram, and TikTok scrapers.
 
-Opens a *headed* Chromium with a persistent profile, lets you log into X and
-Instagram once, then renders the live search/tag pages, saves the raw HTML to
+Opens a *headed* Chromium with a persistent profile, lets you log into X,
+Instagram, and TikTok once, then captures the live pages (X/IG search/tag
+results; TikTok tag -> first video -> comment panel), saves the raw HTML to
 ``.scratch/`` (gitignored), and runs the package parsers against it so we can
 see exactly what comes back today.
+
+TikTok note: the comment *count* is public, but the comment *text* is gated
+behind login (a guest who clicks "comments" gets a login modal) and the comment
+API rejects unsigned requests — so capturing real TikTok comments requires a
+logged-in session, which is why it's in this harness alongside X/IG.
 
 Because the profile is persistent, the login is reused on every later run: the
 script checks whether each site is already authenticated and only prompts you to
@@ -31,6 +37,7 @@ from urllib.parse import quote_plus
 from playwright.sync_api import sync_playwright
 
 from voc_analyzer.scrape import instagram as ig_scraper
+from voc_analyzer.scrape import tiktok as tt_scraper
 from voc_analyzer.scrape import x as x_scraper
 from voc_analyzer.scrape._browser import DEFAULT_USER_AGENT
 
@@ -48,6 +55,9 @@ X_LOGIN = "https://x.com/login"
 X_PROBE = ("https://x.com/home", '[data-testid="SideNav_AccountSwitcher_Button"]')
 IG_LOGIN = "https://www.instagram.com/accounts/login/"
 IG_PROBE = ("https://www.instagram.com/", 'svg[aria-label="Home"], a[href="/explore/"]')
+TT_LOGIN = "https://www.tiktok.com/login"
+TT_PROBE = ("https://www.tiktok.com/", '[data-e2e="profile-icon"]')
+TT_TAG = "https://www.tiktok.com/tag/{tag}"
 
 
 def auto_scroll(page) -> None:
@@ -105,6 +115,47 @@ def logged_in(context, home_url: str, ok_selector: str, timeout: int = 10_000) -
         page.close()
 
 
+def _tag(query: str) -> str:
+    return "".join(ch for ch in query.lower() if ch.isalnum())
+
+
+def capture_tiktok(context, query: str):
+    """Discover a video via the (login-free) tag page, open it, open the comment
+    panel, scroll to load comments, and return ``(video_url, html)`` or ``None``.
+
+    Search is login-walled, but ``/tag/<word>`` serves video links to a guest;
+    the comment *list* then needs an authenticated session to render.
+    """
+    tag_url = TT_TAG.format(tag=_tag(query))
+    page = context.new_page()
+    page.goto(tag_url, wait_until="domcontentloaded")
+    try:
+        page.wait_for_selector('a[href*="/video/"]', timeout=TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - diagnostic only
+        print(f"  (TikTok tag page: no video links appeared: {exc})")
+    links = page.eval_on_selector_all('a[href*="/video/"]', "els => els.map(e => e.href)")
+    page.close()
+    links = [u for u in dict.fromkeys(links) if "/video/" in u]
+    if not links:
+        return None
+
+    video_url = links[0]
+    vp = context.new_page()
+    vp.goto(video_url, wait_until="domcontentloaded")
+    vp.wait_for_timeout(3000)
+    try:
+        vp.click('[data-e2e="comment-icon"]', timeout=8000)  # open the comment panel
+    except Exception as exc:  # noqa: BLE001 - diagnostic only
+        print(f"  (TikTok: could not click the comment icon: {exc})")
+    vp.wait_for_timeout(3000)
+    for _ in range(MAX_SCROLLS):  # load more comments
+        vp.mouse.wheel(0, 4000)
+        vp.wait_for_timeout(900)
+    html = vp.content()
+    vp.close()
+    return video_url, html
+
+
 def main() -> None:
     query = sys.argv[1] if len(sys.argv) > 1 else "sony wh-1000xm5"
     SCRATCH.mkdir(exist_ok=True)
@@ -127,6 +178,7 @@ def main() -> None:
         checks = [
             ("X", X_LOGIN, logged_in(ctx, *X_PROBE)),
             ("Instagram", IG_LOGIN, logged_in(ctx, *IG_PROBE)),
+            ("TikTok", TT_LOGIN, logged_in(ctx, *TT_PROBE)),
         ]
         for name, _, ok in checks:
             print(f"  {name}: {'already logged in' if ok else 'NOT logged in'}")
@@ -134,11 +186,11 @@ def main() -> None:
         if need:
             for _, login in need:
                 ctx.new_page().goto(login)
-            names = " and ".join(name for name, _ in need)
+            names = ", ".join(name for name, _ in need)
             input(f"\n>>> Log into {names} in the open tab(s), then press ENTER "
                   "here to run the scrape...\n")
         else:
-            print("Both sessions already active — skipping login, scraping now.")
+            print("All sessions already active — skipping login, scraping now.")
 
         x_url = x_scraper.SEARCH_URL.format(q=quote_plus(query))
         print(f"\n[X]  rendering {x_url}")
@@ -150,6 +202,17 @@ def main() -> None:
         print(f"\n[IG] rendering {ig_url}")
         ig_html = render(ctx, ig_url, "article")
         report("IG", ig_html, ig_scraper.parse(ig_html, ig_url), SCRATCH / "instagram_tag.html")
+
+        print(f"\n[TT] discovering via {TT_TAG.format(tag=_tag(query))} -> first video -> comments")
+        tt = capture_tiktok(ctx, query)
+        if tt is None:
+            print("[TT] no videos on the tag page (try a single-word query, e.g. 'airpods')")
+        else:
+            tt_url, tt_html = tt
+            print(f"[TT] video: {tt_url}")
+            tt_comments = tt_scraper.parse(tt_html, tt_url)
+            report("TT", tt_html, tt_comments, SCRATCH / "tiktok_comments.html")
+            print("   (0 here is expected until the parser is fixed against this capture)")
 
         ctx.close()
 
