@@ -92,6 +92,11 @@ def to_markdown(analysis: dict) -> str:
         counts = ", ".join(f"{src}: {n}" for src, n in sorted(by_platform.items()))
         lines.append(f"By platform — {counts}.\n")
 
+    summary = (analysis.get("summary") or "").strip()
+    if summary:
+        lines.append("## Executive summary\n")
+        lines.append(summary + "\n")
+
     _sentiment_section(lines, analysis)
 
     lines.append("## Top keywords\n")

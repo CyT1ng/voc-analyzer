@@ -73,5 +73,6 @@ def build_analysis(
         ),
         "trends": trends.detect(comments),
         "representative": _representative(comments, scores),
+        "summary": "",
         "suggestions": [],
     }

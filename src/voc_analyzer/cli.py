@@ -90,6 +90,7 @@ def run(
     console.print(f"[bold]Collected:[/bold] {len(comments)} unique comments")
 
     analysis = analyze.build_analysis(comments, product, keywords, platforms)
+    analysis["summary"] = suggest.summarize(analysis, use_llm=not no_llm)
     analysis["suggestions"] = suggest.suggest(analysis, use_llm=not no_llm)
     md_path, json_path = render.write_report(analysis, out_dir)
 

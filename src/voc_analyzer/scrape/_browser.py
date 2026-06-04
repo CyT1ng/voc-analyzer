@@ -195,6 +195,27 @@ class Browser:
         except Exception as exc:
             raise ScrapeError(f"GET {url} did not return JSON: {exc}") from exc
 
+    def prime(self, url: str, settle_ms: int = 1500) -> None:
+        """Establish a real browser session (cookies) by visiting ``url``.
+
+        Some sites now 403 a *cold* ``get_json`` request but serve it once the
+        context holds the cookies a normal page visit sets — e.g. Reddit's
+        ``.json`` API 403s every endpoint until the homepage has been loaded once.
+        """
+        if self._context is None:  # pragma: no cover - misuse
+            raise ScrapeError("Browser must be used as a context manager")
+        import contextlib
+
+        page = self._context.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_timeout(settle_ms)
+        except Exception as exc:
+            raise ScrapeError(f"failed to prime session at {url}: {exc}") from exc
+        finally:
+            with contextlib.suppress(Exception):
+                page.close()
+
     @staticmethod
     def _auto_scroll(page: object, max_scrolls: int) -> None:
         last_height = -1

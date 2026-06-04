@@ -12,7 +12,8 @@ navigation all 403 from such IPs). From a residential IP it generally works.
 Because of this, Reddit is treated as **best-effort**: on a block, ``fetch``
 logs a warning and returns ``[]`` rather than failing the run.
 
-Flow: ``/search.json`` → first few post permalinks → each post's
+Flow: prime a session (load the homepage once — Reddit 403s cold ``.json``
+requests) → ``/search.json`` → first few post permalinks → each post's
 ``{permalink}.json`` comment tree → unified ``Comment`` records.
 
 ``post_permalinks`` / ``parse_comments`` are pure (JSON in, Comments out) and
@@ -105,6 +106,13 @@ def parse_comments(post_json: list, limit: int = COMMENTS_PER_POST) -> list[Comm
 def fetch(query: str, limit: int = 100) -> Iterable[Comment]:
     collected: list[Comment] = []
     with Browser() as browser:
+        # Reddit now 403s cold .json requests; load the site once so the request
+        # context carries a valid session cookie. Priming is best-effort — if it
+        # fails the get_json below will surface the block and degrade to [].
+        try:
+            browser.prime(BASE + "/")
+        except ScrapeError as exc:
+            log.warning("reddit session priming failed (%s); trying anyway", exc)
         try:
             search = browser.get_json(SEARCH_URL.format(q=quote_plus(query), limit=MAX_POSTS))
         except ScrapeError as exc:
