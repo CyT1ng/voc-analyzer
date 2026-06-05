@@ -6,22 +6,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from voc_analyzer import analyze, config, search
+from voc_analyzer import analyze, config
+from voc_analyzer.gather import run_gather_loop
 from voc_analyzer.integrate.pipeline import integrate
 from voc_analyzer.integrate.schema import Comment
 from voc_analyzer.report import render, suggest
-from voc_analyzer.scrape import instagram, reddit, tiktok, x, youtube
+from voc_analyzer.scrape import FETCHERS
 
 app = typer.Typer(help="Voice-of-Customer analyzer CLI")
 console = Console()
-
-FETCHERS = {
-    "youtube": youtube.fetch,
-    "reddit": reddit.fetch,
-    "tiktok": tiktok.fetch,
-    "instagram": instagram.fetch,
-    "x": x.fetch,
-}
 
 
 def _load_raw(path: Path) -> list[Comment]:
@@ -32,24 +25,6 @@ def _load_raw(path: Path) -> list[Comment]:
         if line:
             comments.append(Comment.model_validate_json(line))
     return comments
-
-
-def _scrape(
-    platforms: list[str], queries: dict[str, list[str]], limit: int
-) -> list[list[Comment]]:
-    batches: list[list[Comment]] = []
-    for platform in platforms:
-        fetch = FETCHERS[platform]
-        for query in queries.get(platform, []):
-            try:
-                batch = list(fetch(query, limit=limit))
-            except Exception as exc:  # one platform/query failing must not abort the run
-                console.print(f"[yellow]warn[/yellow] {platform} '{query}': {exc}")
-                continue
-            if batch:
-                console.print(f"  {platform}: {len(batch)} from '{query}'")
-            batches.append(batch)
-    return batches
 
 
 @app.command()
@@ -67,8 +42,14 @@ def run(
     from_raw: Path = typer.Option(
         None, "--from-raw", help="Load Comments from a JSONL file instead of scraping"
     ),
+    max_rounds: int = typer.Option(
+        None, "--max-rounds", help="Max gathering rounds (default config; 1 = single pass)"
+    ),
+    target: int = typer.Option(
+        None, "--target", help="Stop once this many unique comments are gathered"
+    ),
 ) -> None:
-    """End-to-end run: search → scrape → integrate → analyze → report."""
+    """End-to-end run: gather (search→scrape→integrate, looped) → analyze → report."""
     keywords = keywords or []
     platforms = platforms or list(FETCHERS)
     unknown = [p for p in platforms if p not in FETCHERS]
@@ -84,8 +65,20 @@ def run(
         comments = integrate([_load_raw(from_raw)])
     else:
         console.print(f"[bold]Platforms:[/bold] {', '.join(platforms)}")
-        queries = search.build(product, keywords, platforms=tuple(platforms))
-        comments = integrate(_scrape(platforms, queries, limit))
+        result = run_gather_loop(
+            product,
+            keywords,
+            platforms,
+            limit,
+            use_llm=not no_llm,
+            max_rounds=max_rounds,
+            target=target,
+            on_message=console.print,
+        )
+        comments = result.comments
+        console.print(
+            f"[bold]Gathering:[/bold] {result.rounds} round(s) — stopped: {result.stop_reason}"
+        )
 
     console.print(f"[bold]Collected:[/bold] {len(comments)} unique comments")
 

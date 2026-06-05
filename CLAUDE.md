@@ -36,12 +36,20 @@ Reports are written to `data/processed/report.md` + `analysis.json` (override wi
 ## Architecture
 
 Linear pipeline, one package subfolder per stage. Data flows:
-`search → scrape → integrate → analyze → report`, orchestrated in `cli.py::run`.
+`gather (search→scrape→integrate, looped) → analyze → report`, orchestrated in `cli.py::run`.
+By default `run` uses the **agentic gathering loop**; `--max-rounds 1` reproduces a single
+pass, and `--from-raw` skips gathering entirely.
 
 - **`integrate/schema.py::Comment`** is the contract for the whole system. Every scraper
   produces `Comment`s; everything downstream consumes them. Change it deliberately.
 - **`search/`** — `build(product, keywords, platforms)` turns the product + keywords into a
   per-platform dict of query strings. The bare product name is always one of the queries.
+- **`gather/`** — `run_gather_loop(...)` repeats search→scrape→integrate, accumulating via the
+  idempotent `integrate`, until **enough** (a `claude-sonnet-4-6` agent in `gather/agent.py`
+  decides + proposes the next queries each round) or a guardrail trips (`config.GATHER_*`: max
+  rounds, target count, diminishing-returns floor). Without a key it falls back to deterministic
+  modifier-escalation. The shared `scrape()` helper + `FETCHERS` registry live in
+  `scrape/__init__.py` (CLI-free, with an `on_message` progress callback).
 - **`scrape/<platform>.py`** — each scraper splits a **pure `parse(html) -> list[Comment]`**
   from a **live `fetch(query, limit)`**. `parse()` is unit-tested offline against fixtures in
   `data/samples/`; `fetch()` drives the browser and, on any failure, **catches `ScrapeError`
@@ -69,8 +77,9 @@ Linear pipeline, one package subfolder per stage. Data flows:
 ### Cross-file invariant
 
 The set of platforms is hard-coded in **three** places that must stay in sync:
-`schema.py::Source` (the `Literal`), `search/__init__.py::PLATFORMS`, and `cli.py::FETCHERS`.
-Adding a platform = new `scrape/<platform>.py` with `parse`+`fetch`, plus an entry in all three.
+`schema.py::Source` (the `Literal`), `search/__init__.py::PLATFORMS`, and
+`scrape/__init__.py::FETCHERS`. Adding a platform = new `scrape/<platform>.py` with
+`parse`+`fetch`, plus an entry in all three.
 
 ## Platform reliability (see `docs/platforms.md`)
 
@@ -88,12 +97,14 @@ their live HTML into `.scratch/` for parser work.
 ## Config (env vars, read in `config.py`)
 
 `VOC_HEADLESS` (default true) · `VOC_BROWSER_PROFILE` · `VOC_SCRAPE_TIMEOUT_MS` (30000) ·
-`VOC_MAX_SCROLLS` (10) · `ANTHROPIC_API_KEY` (enables LLM suggestions) ·
-`VOC_LLM_MODEL` (default `claude-opus-4-8`) · `DATA_DIR`. Loaded from `.env` (see `.env.example`).
+`VOC_MAX_SCROLLS` (10) · `ANTHROPIC_API_KEY` (enables LLM) · `VOC_LLM_MODEL` (report model,
+default `claude-sonnet-4-6`) · `VOC_AGENT_MODEL` (gather agent, default `claude-sonnet-4-6`) ·
+`VOC_GATHER_MAX_ROUNDS` (5) · `VOC_GATHER_TARGET` (300) · `VOC_GATHER_MIN_NEW` (10) ·
+`VOC_GATHER_SAMPLE_SIZE` (40) · `VOC_GATHER_MAX_QUERIES` (6) · `DATA_DIR`. Loaded from `.env`.
 
 ## Conventions
 
 - Ruff: line length 100, rules `E,F,I,B,UP,SIM`, target py311. `from __future__ import annotations` everywhere.
 - Tests mirror `src/` structure under `tests/`. Keep parser logic pure so it stays browser-free testable.
-- Scrapers degrade, never abort: `cli.py::_scrape` also wraps each fetch in try/except so one failing
+- Scrapers degrade, never abort: `scrape/__init__.py::scrape` wraps each fetch in try/except so one failing
   platform/query can't take down the run.

@@ -15,9 +15,9 @@ from voc_analyzer import config
 
 log = logging.getLogger(__name__)
 
-# Default to the latest Claude model; override with VOC_LLM_MODEL (e.g. a cheaper
-# claude-haiku-4-5 for high-volume runs).
-MODEL = os.getenv("VOC_LLM_MODEL", "claude-opus-4-8")
+# Default model for the report's summary/suggestions; override with VOC_LLM_MODEL
+# (e.g. claude-opus-4-8 for higher-quality prose, or claude-haiku-4-5 to save cost).
+MODEL = os.getenv("VOC_LLM_MODEL", "claude-sonnet-4-6")
 MAX_SUGGESTIONS = 8
 
 _SYSTEM = (
