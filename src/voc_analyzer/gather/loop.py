@@ -1,10 +1,12 @@
-"""The agentic gathering loop: cold-start search→scrape→integrate, then repeat with
-agent-proposed queries until the agent says "enough" or a guardrail trips.
+"""The agent-driven gathering loop: the agent invents the first round's queries, then each round
+runs scrape → integrate → analyze and the agent evaluates that analysis to decide whether to keep
+going. Hard backstops (max rounds, max total comments) are the only forced stops; target and
+diminishing-returns are advisory signals shown to the agent.
 
-Reuses the existing pipeline primitives: ``search.build`` (round-1 queries), ``scrape``
-(per-round fetching), and the idempotent ``integrate`` (accumulate + dedupe across rounds).
-The controller is ``gather.agent`` when an Anthropic key is configured; otherwise a
-deterministic modifier-escalation fallback keeps the loop terminating offline.
+Reuses: ``agent`` (LLM controller), ``search.build`` (keyless round-1 fallback), ``scrape``
+(per-round fetching, labeled by query), the idempotent ``integrate`` (accumulate + dedupe), and
+``analyze.build_analysis`` (cheap local analysis each round). Without an Anthropic key it falls
+back to a deterministic controller so keyless runs still loop and terminate.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from voc_analyzer import config, search
+from voc_analyzer import analyze, config, search
 from voc_analyzer.gather import agent
 from voc_analyzer.integrate.pipeline import integrate
 from voc_analyzer.integrate.schema import Comment
@@ -33,6 +35,8 @@ class GatherResult:
     rounds: int
     used_queries: list[str]
     stop_reason: str
+    analysis: dict | None
+    controller: str  # "agent" | "fallback" — which controller actually drove the run
 
 
 def _drop_used(queries: dict[str, list[str]], used: set[str]) -> dict[str, list[str]]:
@@ -61,22 +65,18 @@ def _deterministic_decision(
     return {"enough": not nexts, "reason": "modifier escalation", "next_queries": nexts}
 
 
-def _next_decision(
-    product: str,
-    keywords: list[str],
-    round_num: int,
-    comments: list[Comment],
-    used: set[str],
-    target: int,
-    use_llm: bool,
-) -> dict:
+def _initial_queries(
+    product: str, keywords: list[str], platforms: list[str], use_llm: bool
+) -> tuple[dict[str, list[str]], str]:
+    """Round-1 queries: the agent invents them; fall back to search.build keyless/on error."""
     if use_llm and config.anthropic_enabled():
         try:
-            state = agent.build_state(product, keywords, round_num, comments, used)
-            return agent.decide(state)
-        except Exception as exc:  # network/parse/missing dep — fall back, never crash the run
-            log.warning("gather agent failed (%s); using deterministic fallback", exc)
-    return _deterministic_decision(product, comments, used, target)
+            invented = agent.propose_initial_queries(product, keywords)
+            if invented:
+                return {p: list(invented) for p in platforms}, "agent"
+        except Exception as exc:  # network/parse/missing dep — fall back, never crash
+            log.warning("initial-query agent failed (%s); using search.build", exc)
+    return search.build(product, keywords, platforms=tuple(platforms)), "fallback"
 
 
 def run_gather_loop(
@@ -88,20 +88,23 @@ def run_gather_loop(
     use_llm: bool = True,
     max_rounds: int | None = None,
     target: int | None = None,
+    max_total: int | None = None,
     on_message: Callable[[str], None] | None = None,
 ) -> GatherResult:
-    """Gather comments over multiple rounds until enough, then return the deduped set.
+    """Gather comments over agent-driven rounds; return the deduped set + final analysis.
 
-    Round 1 is a cold start using ``search.build``; later rounds use the controller's
-    proposed queries. ``integrate`` deduplicates across rounds, so ``comments`` is always
-    the unique union. Always terminates via max-rounds / target / diminishing-returns guards.
+    The agent invents round-1 queries and, after each round's analysis, decides whether to keep
+    going and what to search next. Hard backstops (``max_rounds``, ``max_total``) always
+    terminate; ``target``/diminishing-returns are advisory signals to the agent.
     """
-    max_rounds = max_rounds or config.GATHER_MAX_ROUNDS
-    target = target or config.GATHER_TARGET
+    max_rounds = config.GATHER_MAX_ROUNDS if max_rounds is None else max_rounds
+    target = config.GATHER_TARGET if target is None else target
+    max_total = config.GATHER_MAX_TOTAL if max_total is None else max_total
 
     comments: list[Comment] = []
     used: set[str] = set()
-    queries = search.build(product, keywords, platforms=tuple(platforms))
+    analysis: dict | None = None
+    queries, controller = _initial_queries(product, keywords, platforms, use_llm)
     stop_reason = "max_rounds"
     round_num = 0
 
@@ -112,35 +115,67 @@ def run_gather_loop(
             break
         _record_used(queries, used)
 
-        batches = scrape(platforms, queries, limit, on_message=on_message)
+        labeled = scrape(platforms, queries, limit, on_message=on_message)
+        per_query_yields = [
+            {"platform": p, "query": q, "count": len(batch)} for p, q, batch in labeled
+        ]
         before = len(comments)
-        comments = integrate([comments, *batches])
+        comments = integrate([comments, *[batch for _, _, batch in labeled]])
         added = len(comments) - before
+        analysis = analyze.build_analysis(comments, product, keywords, platforms)
         if on_message:
             on_message(f"  round {round_num}: +{added} new (total {len(comments)})")
 
-        if len(comments) >= target:
-            stop_reason = "target_reached"
-            break
-        if round_num > 1 and added < config.GATHER_MIN_NEW:
-            stop_reason = "diminishing_returns"
+        # --- hard backstops only ---
+        if len(comments) >= max_total:
+            stop_reason = "max_total"
             break
         if round_num == max_rounds:
             stop_reason = "max_rounds"
             break
 
-        decision = _next_decision(product, keywords, round_num, comments, used, target, use_llm)
+        # --- agent decides (deterministic fallback when keyless / on error) ---
+        diminishing = round_num > 1 and added < config.GATHER_MIN_NEW
+        if use_llm and config.anthropic_enabled():
+            try:
+                state = agent.build_evaluation(
+                    product,
+                    analysis,
+                    per_query_yields,
+                    used,
+                    round_num,
+                    rounds_remaining=max_rounds - round_num,
+                    added_last_round=added,
+                    target_signal=target,
+                    min_new_signal=config.GATHER_MIN_NEW,
+                    diminishing=diminishing,
+                )
+                decision = agent.decide(state)
+                controller = "agent"
+            except Exception as exc:  # network/parse/missing dep — fall back, never crash
+                log.warning("gather agent failed (%s); using deterministic fallback", exc)
+                decision = _deterministic_decision(product, comments, used, target)
+                controller = "fallback"
+        else:
+            decision = _deterministic_decision(product, comments, used, target)
+            controller = "fallback"
+
         if decision["enough"]:
-            stop_reason = "agent_enough"
+            stop_reason = "agent_enough" if controller == "agent" else "fallback_enough"
             break
         if not decision["next_queries"]:
-            stop_reason = "agent_no_queries"
+            stop_reason = "agent_no_queries" if controller == "agent" else "fallback_no_queries"
             break
         queries = {p: list(decision["next_queries"]) for p in platforms}
+
+    if analysis is None:  # e.g. max_rounds=0 → zero rounds ran
+        analysis = analyze.build_analysis(comments, product, keywords, platforms)
 
     return GatherResult(
         comments=comments,
         rounds=round_num,
         used_queries=sorted(used),
         stop_reason=stop_reason,
+        analysis=analysis,
+        controller=controller,
     )

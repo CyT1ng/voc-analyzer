@@ -129,8 +129,12 @@ def _suggest_rule_based(analysis: dict) -> list[str]:
     return out[:MAX_SUGGESTIONS]
 
 
-def _payload(analysis: dict) -> dict:
-    """Compact projection of the analysis with only fields useful for suggestions."""
+def payload(analysis: dict) -> dict:
+    """Compact projection of the analysis with only the fields useful for an LLM.
+
+    Shared by the report's suggestion/summary calls and by the gather agent's per-round
+    evaluation, so the agent and the report see the same distilled view.
+    """
     sentiment = analysis.get("sentiment", {})
     representative = analysis.get("representative", {})
     kbs = analysis.get("keywords_by_sentiment", {})
@@ -181,7 +185,7 @@ def _suggest_llm(analysis: dict) -> list[str]:
                 "content": (
                     "Here is the Voice-of-Customer analysis. Return the JSON array "
                     "of improvement suggestions.\n\n"
-                    + json.dumps(_payload(analysis), ensure_ascii=False, indent=2)
+                    + json.dumps(payload(analysis), ensure_ascii=False, indent=2)
                 ),
             }
         ],
@@ -206,7 +210,7 @@ def _summarize_llm(analysis: dict) -> str:
                 "role": "user",
                 "content": (
                     "Here is the Voice-of-Customer analysis. Write the executive "
-                    "summary.\n\n" + json.dumps(_payload(analysis), ensure_ascii=False, indent=2)
+                    "summary.\n\n" + json.dumps(payload(analysis), ensure_ascii=False, indent=2)
                 ),
             }
         ],

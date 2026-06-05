@@ -43,10 +43,13 @@ def run(
         None, "--from-raw", help="Load Comments from a JSONL file instead of scraping"
     ),
     max_rounds: int = typer.Option(
-        None, "--max-rounds", help="Max gathering rounds (default config; 1 = single pass)"
+        None, "--max-rounds", help="Max gathering rounds (hard cap; 1 = single pass)"
     ),
     target: int = typer.Option(
-        None, "--target", help="Stop once this many unique comments are gathered"
+        None, "--target", help="Advisory 'enough' target shown to the agent (not a hard stop)"
+    ),
+    max_total: int = typer.Option(
+        None, "--max-total", help="Hard cap on total comments gathered (safety backstop)"
     ),
 ) -> None:
     """End-to-end run: gather (search→scrape→integrate, looped) → analyze → report."""
@@ -63,6 +66,7 @@ def run(
     if from_raw is not None:
         console.print(f"[bold]Source:[/bold] {from_raw}")
         comments = integrate([_load_raw(from_raw)])
+        analysis = analyze.build_analysis(comments, product, keywords, platforms)
     else:
         console.print(f"[bold]Platforms:[/bold] {', '.join(platforms)}")
         result = run_gather_loop(
@@ -73,16 +77,18 @@ def run(
             use_llm=not no_llm,
             max_rounds=max_rounds,
             target=target,
+            max_total=max_total,
             on_message=console.print,
         )
         comments = result.comments
+        analysis = result.analysis  # computed inside the loop; no recompute
         console.print(
-            f"[bold]Gathering:[/bold] {result.rounds} round(s) — stopped: {result.stop_reason}"
+            f"[bold]Gathering:[/bold] {result.rounds} round(s) — "
+            f"stopped: {result.stop_reason} (by {result.controller})"
         )
 
     console.print(f"[bold]Collected:[/bold] {len(comments)} unique comments")
 
-    analysis = analyze.build_analysis(comments, product, keywords, platforms)
     analysis["summary"] = suggest.summarize(analysis, use_llm=not no_llm)
     analysis["suggestions"] = suggest.suggest(analysis, use_llm=not no_llm)
     md_path, json_path = render.write_report(analysis, out_dir)

@@ -1,67 +1,55 @@
-"""Gathering controller — an LLM agent (claude-sonnet-4-6) that decides, each round,
-whether enough Voice-of-Customer data has been gathered and, if not, what to search next.
+"""Gathering controller — an LLM agent (claude-sonnet-4-6) that drives the gather workflow.
 
-Mirrors the isolated, testable LLM-call pattern in ``report/suggest.py``: a lazy
-``anthropic`` import, prompt caching on the system message, and JSON parsing with a
-fence-stripping helper. The caller (``gather/loop.py``) handles fallback on any error.
+Two responsibilities, each an isolated Anthropic call mirroring ``report/suggest.py`` (lazy
+import, prompt caching, fence-stripped JSON parsing):
+
+* ``propose_initial_queries`` — invent the first round's search queries from the product.
+* ``decide`` — after each round's analysis, judge whether enough has been gathered and, if not,
+  propose the next queries to fill the gaps.
+
+Both raise on API/parse error so the caller (``gather/loop.py``) can fall back deterministically.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections import Counter
 from collections.abc import Iterable
 
 from voc_analyzer import config
-from voc_analyzer.integrate.schema import Comment
+from voc_analyzer.report.suggest import payload
 
 AGENT_MODEL = os.getenv("VOC_AGENT_MODEL", "claude-sonnet-4-6")
 
+_INITIAL_SYSTEM = (
+    "You are starting a Voice-of-Customer investigation for a product. Propose the first batch "
+    "of web/social search queries that will surface real user opinions about it. If seed "
+    "keywords are given, treat them as starting hints to EXPAND (features, complaint terms, "
+    "use-cases, competitor comparisons); if none are given, work from the product name alone. "
+    "Favor diverse, opinion-rich angles (reviews, problems, 'worth it', 'vs', complaints) over "
+    "marketing-page phrasing. Keep queries short and search-engine friendly.\n\n"
+    "Respond ONLY with a JSON object, no prose or markdown:\n"
+    '{"queries": ["<query>", "..."]}'
+)
+
 _AGENT_SYSTEM = (
-    "You are a research controller gathering Voice-of-Customer data about a product. "
-    "You are given the current gathering state: how many comments have been collected "
-    "(overall and per platform), a sample of the collected comment texts, and the search "
-    "queries already used.\n\n"
-    "Decide whether enough representative, ON-TOPIC comments have been gathered to write a "
-    "useful product analysis. Judge quality, not just count: if the sample is dominated by "
-    "off-topic noise (e.g. praise for a reviewer's video rather than the product itself), or "
-    "skews to one narrow angle, it is NOT enough. If not enough, propose the next search "
-    "queries to fill the gaps — uncovered features, complaint terms, use-cases, or competitor "
-    "comparisons. Never repeat a query already used.\n\n"
+    "You are the controller of a Voice-of-Customer gathering loop for a product. After each "
+    "round you are given the AGGREGATED ANALYSIS of everything gathered so far (overall "
+    "sentiment split, the most frequent keywords/phrases broken down by sentiment, and "
+    "representative verbatim quotes), the per-query yields (which query on which platform "
+    "returned how many comments), the queries already used, and some advisory signals.\n\n"
+    "YOU decide whether to keep gathering. Judge sufficiency by QUALITY and COVERAGE, not raw "
+    "count: enough means the analysis paints a clear, multi-faceted picture of what users think "
+    "(real strengths AND pain points, on-topic, not dominated by noise like praise for a "
+    "reviewer's video). The 'signals' (rough_target, comments_added_last_round, "
+    "diminishing_returns, rounds_remaining) are ADVICE you may override — stop early if the "
+    "picture is already clear, or keep going past the rough target if it is thin or one-sided. "
+    "Use per_query_yields to prefer productive angles and abandon dry ones.\n\n"
+    "If NOT enough, propose the next search queries to fill the specific gaps you see (uncovered "
+    "features, complaint terms, use-cases, comparisons). Never repeat a query already used.\n\n"
     "Respond ONLY with a JSON object, no prose or markdown:\n"
     '{"enough": <bool>, "reason": "<one sentence>", "next_queries": ["<query>", ...]}'
 )
-
-
-def _sample(comments: list[Comment], k: int) -> list[str]:
-    """Up to ``k`` comment texts, strided across the list for variety."""
-    if k <= 0 or not comments:
-        return []
-    if len(comments) <= k:
-        return [c.text for c in comments]
-    step = len(comments) / k
-    return [comments[int(i * step)].text for i in range(k)]
-
-
-def build_state(
-    product: str,
-    keywords: list[str],
-    round_num: int,
-    comments: list[Comment],
-    used_queries: Iterable[str],
-) -> dict:
-    """Compact, token-bounded snapshot of gathering progress for the agent."""
-    by_platform = Counter(c.source for c in comments)
-    return {
-        "product": product,
-        "keywords": keywords,
-        "round": round_num,
-        "total_unique_comments": len(comments),
-        "comments_by_platform": dict(by_platform),
-        "queries_already_used": sorted(set(used_queries)),
-        "sample_comments": _sample(comments, config.GATHER_SAMPLE_SIZE),
-    }
 
 
 def _strip_fences(text: str) -> str:
@@ -70,6 +58,79 @@ def _strip_fences(text: str) -> str:
         text = text.split("\n", 1)[-1] if "\n" in text else text
         text = text.rsplit("```", 1)[0]
     return text.strip()
+
+
+def _client_text(system: str, user: str) -> str:
+    """Shared Anthropic call: return the concatenated text of the response."""
+    from anthropic import Anthropic
+
+    client = Anthropic()
+    message = client.messages.create(
+        model=AGENT_MODEL,
+        max_tokens=1024,
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user}],
+    )
+    return "".join(b.text for b in message.content if getattr(b, "type", None) == "text")
+
+
+def _normalize_queries(data: object) -> list[str]:
+    """Coerce model output (object with 'queries', or a bare array) into a clean query list."""
+    if isinstance(data, dict):
+        data = data.get("queries", [])
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        query = str(item).strip()
+        if query and query.lower() not in seen:
+            seen.add(query.lower())
+            out.append(query)
+        if len(out) >= config.GATHER_MAX_QUERIES:
+            break
+    return out
+
+
+def propose_initial_queries(product: str, keywords: list[str]) -> list[str]:
+    """Invent the first round's search queries from the product (``keywords`` are seeds).
+
+    Raises on API/parse error so the loop can fall back to ``search.build``.
+    """
+    user = (
+        "Propose the initial search queries.\n\n"
+        + json.dumps({"product": product, "seed_keywords": keywords or []}, ensure_ascii=False)
+    )
+    return _normalize_queries(json.loads(_strip_fences(_client_text(_INITIAL_SYSTEM, user))))
+
+
+def build_evaluation(
+    product: str,
+    analysis: dict,
+    per_query_yields: list[dict],
+    used_queries: Iterable[str],
+    round_num: int,
+    *,
+    rounds_remaining: int,
+    added_last_round: int,
+    target_signal: int,
+    min_new_signal: int,
+    diminishing: bool,
+) -> dict:
+    """Per-round agent input: the analysis projection + per-query yields + advisory signals."""
+    return {
+        **payload(analysis),
+        "round": round_num,
+        "per_query_yields": per_query_yields,
+        "queries_already_used": sorted(set(used_queries)),
+        "signals": {
+            "rough_target": target_signal,
+            "comments_added_last_round": added_last_round,
+            "min_new_threshold": min_new_signal,
+            "diminishing_returns": diminishing,
+            "rounds_remaining": rounds_remaining,
+        },
+    }
 
 
 def _normalize_decision(data: object) -> dict:
@@ -87,28 +148,14 @@ def _normalize_decision(data: object) -> dict:
 
 
 def decide(state: dict) -> dict:
-    """Ask the agent for a gathering decision.
+    """Evaluate the per-round state and decide whether to keep gathering.
 
     Returns ``{"enough": bool, "reason": str, "next_queries": list[str]}``. Raises on any
     API/parse error so the caller can fall back to a deterministic decision.
     """
-    from anthropic import Anthropic
-
-    client = Anthropic()
-    message = client.messages.create(
-        model=AGENT_MODEL,
-        max_tokens=1024,
-        system=[{"type": "text", "text": _AGENT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Here is the current gathering state. Decide whether it is enough and, "
-                    "if not, what to search next.\n\n"
-                    + json.dumps(state, ensure_ascii=False, indent=2)
-                ),
-            }
-        ],
+    user = (
+        "Here is the current gathering state (analysis + yields + signals). Decide whether it "
+        "is enough and, if not, what to search next.\n\n"
+        + json.dumps(state, ensure_ascii=False, indent=2)
     )
-    text = "".join(b.text for b in message.content if getattr(b, "type", None) == "text")
-    return _normalize_decision(json.loads(_strip_fences(text)))
+    return _normalize_decision(json.loads(_strip_fences(_client_text(_AGENT_SYSTEM, user))))

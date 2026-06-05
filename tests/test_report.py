@@ -71,7 +71,7 @@ def test_suggest_falls_back_when_llm_errors(monkeypatch):
 
 
 def test_payload_includes_phrases_and_quotes():
-    payload = suggest._payload(_analysis())
+    payload = suggest.payload(_analysis())
     assert "negative_phrases" in payload
     assert "positive_phrases" in payload
     assert "negative_quotes" in payload

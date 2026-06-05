@@ -29,15 +29,16 @@ def scrape(
     *,
     fetchers: dict[str, Callable[..., object]] | None = None,
     on_message: Callable[[str], None] | None = None,
-) -> list[list[Comment]]:
-    """Run each platform's queries; return one Comment batch per ``(platform, query)``.
+) -> list[tuple[str, str, list[Comment]]]:
+    """Run each platform's queries; return one ``(platform, query, batch)`` per attempted query.
 
-    Each fetch is isolated: a failing platform/query reports via ``on_message`` and is
-    skipped rather than aborting the run. ``on_message`` receives human-readable progress
-    strings (rich markup allowed); pass ``None`` to stay silent (e.g. in tests).
+    Each fetch is isolated: a failing platform/query reports via ``on_message`` and yields an
+    empty batch (so callers can see which queries came up dry — useful signal for the gather
+    agent) rather than aborting the run. ``on_message`` receives human-readable progress strings
+    (rich markup allowed); pass ``None`` to stay silent (e.g. in tests).
     """
     fetchers = fetchers or FETCHERS
-    batches: list[list[Comment]] = []
+    results: list[tuple[str, str, list[Comment]]] = []
     for platform in platforms:
         fetch = fetchers[platform]
         for query in queries.get(platform, []):
@@ -46,8 +47,8 @@ def scrape(
             except Exception as exc:  # one platform/query failing must not abort the run
                 if on_message:
                     on_message(f"[yellow]warn[/yellow] {platform} '{query}': {exc}")
-                continue
+                batch = []
             if batch and on_message:
                 on_message(f"  {platform}: {len(batch)} from '{query}'")
-            batches.append(batch)
-    return batches
+            results.append((platform, query, batch))
+    return results

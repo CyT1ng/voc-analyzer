@@ -36,20 +36,24 @@ Reports are written to `data/processed/report.md` + `analysis.json` (override wi
 ## Architecture
 
 Linear pipeline, one package subfolder per stage. Data flows:
-`gather (search→scrape→integrate, looped) → analyze → report`, orchestrated in `cli.py::run`.
-By default `run` uses the **agentic gathering loop**; `--max-rounds 1` reproduces a single
-pass, and `--from-raw` skips gathering entirely.
+`gather (agent-keyworded search→scrape→integrate→analyze, looped) → report`, orchestrated in
+`cli.py::run`. By default `run` uses the **agent-driven gathering loop**; `--max-rounds 1` is a
+single pass, and `--from-raw` skips gathering entirely.
 
 - **`integrate/schema.py::Comment`** is the contract for the whole system. Every scraper
   produces `Comment`s; everything downstream consumes them. Change it deliberately.
 - **`search/`** — `build(product, keywords, platforms)` turns the product + keywords into a
   per-platform dict of query strings. The bare product name is always one of the queries.
-- **`gather/`** — `run_gather_loop(...)` repeats search→scrape→integrate, accumulating via the
-  idempotent `integrate`, until **enough** (a `claude-sonnet-4-6` agent in `gather/agent.py`
-  decides + proposes the next queries each round) or a guardrail trips (`config.GATHER_*`: max
-  rounds, target count, diminishing-returns floor). Without a key it falls back to deterministic
-  modifier-escalation. The shared `scrape()` helper + `FETCHERS` registry live in
-  `scrape/__init__.py` (CLI-free, with an `on_message` progress callback).
+- **`gather/`** — `run_gather_loop(...)` is **agent-driven** (`claude-sonnet-4-6` in
+  `gather/agent.py`): the agent `propose_initial_queries` invents round-1 queries from the
+  product (`-k` are seeds), then each round runs scrape→integrate→`build_analysis` and the agent
+  `decide`s on the *analysis* (sentiment/keywords/quotes via `suggest.payload`) + per-query
+  yields whether to stop or propose next queries. **The agent decides**; `target`/diminishing-
+  returns are advisory signals, and only `max_rounds` + `max_total` (`config.GATHER_*`) are hard
+  backstops. `GatherResult` carries the final `analysis` (CLI reuses it) and `controller`
+  (`agent`|`fallback`). No key → deterministic fallback (`search.build` initial + modifier
+  escalation). The shared `scrape()` (returns labeled `(platform, query, batch)` tuples) +
+  `FETCHERS` live in `scrape/__init__.py`.
 - **`scrape/<platform>.py`** — each scraper splits a **pure `parse(html) -> list[Comment]`**
   from a **live `fetch(query, limit)`**. `parse()` is unit-tested offline against fixtures in
   `data/samples/`; `fetch()` drives the browser and, on any failure, **catches `ScrapeError`
@@ -99,8 +103,9 @@ their live HTML into `.scratch/` for parser work.
 `VOC_HEADLESS` (default true) · `VOC_BROWSER_PROFILE` · `VOC_SCRAPE_TIMEOUT_MS` (30000) ·
 `VOC_MAX_SCROLLS` (10) · `ANTHROPIC_API_KEY` (enables LLM) · `VOC_LLM_MODEL` (report model,
 default `claude-sonnet-4-6`) · `VOC_AGENT_MODEL` (gather agent, default `claude-sonnet-4-6`) ·
-`VOC_GATHER_MAX_ROUNDS` (5) · `VOC_GATHER_TARGET` (300) · `VOC_GATHER_MIN_NEW` (10) ·
-`VOC_GATHER_SAMPLE_SIZE` (40) · `VOC_GATHER_MAX_QUERIES` (6) · `DATA_DIR`. Loaded from `.env`.
+`VOC_GATHER_MAX_ROUNDS` (5) · `VOC_GATHER_MAX_TOTAL` (1000) — the two hard backstops · advisory
+signals `VOC_GATHER_TARGET` (300) / `VOC_GATHER_MIN_NEW` (10) · `VOC_GATHER_MAX_QUERIES` (6) ·
+`DATA_DIR`. Loaded from `.env`.
 
 ## Conventions
 
