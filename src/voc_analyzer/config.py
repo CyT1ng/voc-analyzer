@@ -38,6 +38,16 @@ BROWSER_PROFILE = os.getenv("VOC_BROWSER_PROFILE") or None
 SCRAPE_TIMEOUT_MS = _env_int("VOC_SCRAPE_TIMEOUT_MS", 30_000)
 MAX_SCROLLS = _env_int("VOC_MAX_SCROLLS", 10)
 
+# --- Agentic gathering loop ---
+# Hard backstops (always terminate the loop): max rounds + max total comments.
+GATHER_MAX_ROUNDS = _env_int("VOC_GATHER_MAX_ROUNDS", 5)  # hard cap on rounds (cost)
+GATHER_MAX_TOTAL = _env_int("VOC_GATHER_MAX_TOTAL", 1000)  # hard cap on total comments gathered
+# Advisory signals shown to the agent (NOT auto-stops — the agent decides):
+GATHER_TARGET = _env_int("VOC_GATHER_TARGET", 300)  # rough "enough" target hinted to the agent
+GATHER_MIN_NEW = _env_int("VOC_GATHER_MIN_NEW", 10)  # diminishing-returns threshold (signal)
+GATHER_MAX_QUERIES = _env_int("VOC_GATHER_MAX_QUERIES", 6)  # cap on agent queries per round
+GATHER_SAMPLE_SIZE = _env_int("VOC_GATHER_SAMPLE_SIZE", 40)  # (legacy) raw-sample size, now unused
+
 
 def require_env(name: str) -> str:
     value = os.getenv(name)

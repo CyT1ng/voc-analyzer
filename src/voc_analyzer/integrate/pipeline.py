@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -11,11 +12,20 @@ MIN_TEXT_LEN = 3
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# URLs and markdown links pollute keyword/phrase extraction with junk tokens
+# (e.g. Reddit image embeds → "preview redd", "jpeg width", "amp format"). Drop the
+# URL but keep human anchor text.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")  # ![alt](url) → removed entirely
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")  # [text](url) → text
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+")  # bare URLs → removed
 
 
 def normalize_text(text: str) -> str:
-    """Normalize unicode, strip control chars, and collapse whitespace."""
-    text = unicodedata.normalize("NFKC", text)
+    """Normalize unicode, drop URLs/markdown links, strip control chars, collapse whitespace."""
+    text = html.unescape(unicodedata.normalize("NFKC", text))
+    text = _MD_IMAGE_RE.sub(" ", text)
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _URL_RE.sub(" ", text)
     text = _CONTROL_RE.sub("", text)
     text = _WHITESPACE_RE.sub(" ", text)
     return text.strip()
