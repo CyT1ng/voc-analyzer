@@ -23,6 +23,18 @@ def test_normalize_text_collapses_whitespace():
     assert normalize_text("a\n\n b\tc  ") == "a b c"
 
 
+def test_normalize_text_strips_urls_markdown_and_entities():
+    raw = (
+        "Check [my review](https://youtube.com/watch?v=abc) and "
+        "![pic](https://preview.redd.it/x.jpeg?width=640&amp;format=pjpg&amp;auto=webp) "
+        "— battery is great https://example.com/p?utm_source=reddit"
+    )
+    out = normalize_text(raw)
+    assert "my review" in out and "battery is great" in out  # anchor/real text kept
+    for junk in ("http", "redd", "jpeg", "pjpg", "webp", "utm", "width"):
+        assert junk not in out.lower()  # URL/markup tokens gone
+
+
 def test_clean_drops_empty_and_too_short():
     out = clean([_c("1", "  hello   world  "), _c("2", "   "), _c("3", "hi")])
     texts = [c.text for c in out]

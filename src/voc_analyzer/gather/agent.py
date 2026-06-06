@@ -27,7 +27,10 @@ _INITIAL_SYSTEM = (
     "keywords are given, treat them as starting hints to EXPAND (features, complaint terms, "
     "use-cases, competitor comparisons); if none are given, work from the product name alone. "
     "Favor diverse, opinion-rich angles (reviews, problems, 'worth it', 'vs', complaints) over "
-    "marketing-page phrasing. Keep queries short and search-engine friendly.\n\n"
+    "marketing-page phrasing. Keep queries short and search-engine friendly. Every query MUST "
+    "name the product (or an unambiguous identifier for it) so results stay on-topic — never use "
+    "a generic phrase alone (e.g. 'repair cost', 'battery draining') that would also match "
+    "unrelated products or communities.\n\n"
     "Respond ONLY with a JSON object, no prose or markdown:\n"
     '{"queries": ["<query>", "..."]}'
 )
@@ -46,7 +49,8 @@ _AGENT_SYSTEM = (
     "picture is already clear, or keep going past the rough target if it is thin or one-sided. "
     "Use per_query_yields to prefer productive angles and abandon dry ones.\n\n"
     "If NOT enough, propose the next search queries to fill the specific gaps you see (uncovered "
-    "features, complaint terms, use-cases, comparisons). Never repeat a query already used.\n\n"
+    "features, complaint terms, use-cases, comparisons). Every proposed query MUST name the "
+    "product so results stay on-topic. Never repeat a query already used.\n\n"
     "Respond ONLY with a JSON object, no prose or markdown:\n"
     '{"enough": <bool>, "reason": "<one sentence>", "next_queries": ["<query>", ...]}'
 )
