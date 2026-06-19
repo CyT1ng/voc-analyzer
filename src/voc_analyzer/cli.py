@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
@@ -18,12 +19,23 @@ console = Console()
 
 
 def _load_raw(path: Path) -> list[Comment]:
-    """Load unified Comments from a JSONL file (one Comment per line)."""
+    """Load unified Comments from a JSONL file (one Comment per line).
+
+    Malformed lines are skipped with a warning rather than aborting the run.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(f"cannot read --from-raw file: {exc}") from exc
     comments: list[Comment] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(text.splitlines(), start=1):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             comments.append(Comment.model_validate_json(line))
+        except ValidationError:
+            console.print(f"[yellow]warn[/yellow] {path.name}:{lineno}: skipping malformed line")
     return comments
 
 
@@ -66,7 +78,8 @@ def run(
     if from_raw is not None:
         console.print(f"[bold]Source:[/bold] {from_raw}")
         comments = integrate([_load_raw(from_raw)])
-        analysis = analyze.build_analysis(comments, product, keywords, platforms)
+        # Report the platforms actually present in the file, not the scrape defaults.
+        analysis = analyze.build_analysis(comments, product, keywords)
     else:
         console.print(f"[bold]Platforms:[/bold] {', '.join(platforms)}")
         result = run_gather_loop(
