@@ -1,7 +1,9 @@
-"""Gathering controller — an LLM agent (claude-sonnet-4-6) that drives the gather workflow.
+"""Gathering controller — an LLM agent that drives the gather workflow.
 
-Two responsibilities, each an isolated Anthropic call mirroring ``report/suggest.py`` (lazy
-import, prompt caching, fence-stripped JSON parsing):
+Two responsibilities, each an isolated LLM call (via the provider-agnostic
+``voc_analyzer.llm.complete``, mirroring ``report/suggest.py``) with fence-stripped JSON
+parsing. The model id comes from ``VOC_AGENT_MODEL`` (default ``claude-sonnet-4-6``); under
+``VOC_LLM_PROVIDER=openai`` set it to the free model's id (e.g. a Qwen id):
 
 * ``propose_initial_queries`` — invent the first round's search queries from the product.
 * ``decide`` — after each round's analysis, judge whether enough has been gathered and, if not,
@@ -17,7 +19,7 @@ import os
 from collections.abc import Iterable
 
 from voc_analyzer import config
-from voc_analyzer.report.suggest import payload
+from voc_analyzer.report.suggest import payload, strip_fences
 
 AGENT_MODEL = os.getenv("VOC_AGENT_MODEL", "claude-sonnet-4-6")
 
@@ -56,26 +58,11 @@ _AGENT_SYSTEM = (
 )
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1] if "\n" in text else text
-        text = text.rsplit("```", 1)[0]
-    return text.strip()
-
-
 def _client_text(system: str, user: str) -> str:
-    """Shared Anthropic call: return the concatenated text of the response."""
-    from anthropic import Anthropic
+    """Shared LLM call (provider-agnostic): return the response text."""
+    from voc_analyzer.llm import complete
 
-    client = Anthropic()
-    message = client.messages.create(
-        model=AGENT_MODEL,
-        max_tokens=1024,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user}],
-    )
-    return "".join(b.text for b in message.content if getattr(b, "type", None) == "text")
+    return complete(system, user, model=AGENT_MODEL, max_tokens=1024)
 
 
 def _normalize_queries(data: object) -> list[str]:
@@ -105,7 +92,7 @@ def propose_initial_queries(product: str, keywords: list[str]) -> list[str]:
         "Propose the initial search queries.\n\n"
         + json.dumps({"product": product, "seed_keywords": keywords or []}, ensure_ascii=False)
     )
-    return _normalize_queries(json.loads(_strip_fences(_client_text(_INITIAL_SYSTEM, user))))
+    return _normalize_queries(json.loads(strip_fences(_client_text(_INITIAL_SYSTEM, user))))
 
 
 def build_evaluation(
@@ -162,4 +149,4 @@ def decide(state: dict) -> dict:
         "is enough and, if not, what to search next.\n\n"
         + json.dumps(state, ensure_ascii=False, indent=2)
     )
-    return _normalize_decision(json.loads(_strip_fences(_client_text(_AGENT_SYSTEM, user))))
+    return _normalize_decision(json.loads(strip_fences(_client_text(_AGENT_SYSTEM, user))))

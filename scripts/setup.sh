@@ -7,8 +7,7 @@ cd "$(dirname "$0")/.."
 echo "==> Syncing dependencies (with dev extras)"
 uv sync --extra dev
 
-echo "==> Installing Chromium for Playwright"
-uv run playwright install chromium
+# Scraping is keyless DuckDuckGo search (the `ddgs` lib) — no browser to install.
 
 if [ ! -f .env ]; then
   echo "==> Creating .env from template"
