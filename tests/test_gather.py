@@ -2,6 +2,7 @@ import sys
 import types
 from datetime import UTC, datetime
 
+import pytest
 from typer.testing import CliRunner
 
 from voc_analyzer.analyze import build_analysis
@@ -11,6 +12,12 @@ from voc_analyzer.integrate.schema import Comment
 from voc_analyzer.scrape import scrape
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _pin_anthropic_provider(monkeypatch):
+    # Keep the fake-anthropic agent tests offline regardless of VOC_LLM_PROVIDER in the env.
+    monkeypatch.setenv("VOC_LLM_PROVIDER", "anthropic")
 
 
 def _comment(source_id, source="youtube", text=None):
@@ -57,7 +64,7 @@ def _install_fake_anthropic(monkeypatch, response_text):
 
 def _patch_agent(monkeypatch, *, decide, initial=("seed query",)):
     """Enable the LLM path and stub both agent calls (initial queries + per-round decide)."""
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: True)
     monkeypatch.setattr(
         loop.agent, "propose_initial_queries", lambda product, keywords: list(initial)
     )
@@ -282,7 +289,7 @@ def test_loop_round1_uses_agent_queries(monkeypatch):
 
 
 def test_loop_round1_falls_back_to_search_build(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: False)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: False)
     seen = []
 
     def fake_scrape(platforms, queries, limit, *, on_message=None, **k):
@@ -320,7 +327,7 @@ def test_loop_evaluate_receives_analysis_and_yields(monkeypatch):
 
 
 def test_loop_returns_analysis(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: False)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: False)
     monkeypatch.setattr(
         loop, "scrape", lambda *a, **k: [("youtube", "q", [_comment("a"), _comment("b")])]
     )
@@ -337,14 +344,14 @@ def test_loop_controller_attribution_agent(monkeypatch):
 
 
 def test_loop_controller_attribution_fallback(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: False)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: False)
     monkeypatch.setattr(loop, "scrape", lambda *a, **k: [("youtube", "q", [_comment("a")])])
     res = run_gather_loop("Acme", [], ["youtube"], 10, max_rounds=5, target=1)
     assert res.controller == "fallback" and res.stop_reason == "fallback_enough"
 
 
 def test_loop_agent_error_falls_back(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: True)
     monkeypatch.setattr(loop.agent, "propose_initial_queries", lambda p, k: ["seed"])
     monkeypatch.setattr(loop.agent, "decide", lambda s: (_ for _ in ()).throw(RuntimeError("down")))
     monkeypatch.setattr(loop.config, "GATHER_MIN_NEW", 0)
@@ -361,7 +368,7 @@ def test_loop_agent_error_falls_back(monkeypatch):
 
 
 def test_loop_deterministic_fallback_without_key(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: False)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: False)
     monkeypatch.setattr(loop.agent, "propose_initial_queries", _boom)
     monkeypatch.setattr(loop.agent, "decide", _boom)
     monkeypatch.setattr(loop.config, "GATHER_MIN_NEW", 0)
@@ -378,7 +385,7 @@ def test_loop_deterministic_fallback_without_key(monkeypatch):
 
 
 def test_loop_explicit_zero_max_rounds(monkeypatch):
-    monkeypatch.setattr(loop.config, "anthropic_enabled", lambda: False)
+    monkeypatch.setattr(loop.config, "llm_enabled", lambda: False)
     called = {"scrape": 0}
 
     def fake_scrape(*a, **k):

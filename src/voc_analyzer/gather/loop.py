@@ -5,7 +5,7 @@ diminishing-returns are advisory signals shown to the agent.
 
 Reuses: ``agent`` (LLM controller), ``search.build`` (keyless round-1 fallback), ``scrape``
 (per-round fetching, labeled by query), the idempotent ``integrate`` (accumulate + dedupe), and
-``analyze.build_analysis`` (cheap local analysis each round). Without an Anthropic key it falls
+``analyze.build_analysis`` (cheap local analysis each round). Without an LLM key it falls
 back to a deterministic controller so keyless runs still loop and terminate.
 """
 
@@ -69,7 +69,7 @@ def _initial_queries(
     product: str, keywords: list[str], platforms: list[str], use_llm: bool
 ) -> tuple[dict[str, list[str]], str]:
     """Round-1 queries: the agent invents them; fall back to search.build keyless/on error."""
-    if use_llm and config.anthropic_enabled():
+    if use_llm and config.llm_enabled():
         try:
             invented = agent.propose_initial_queries(product, keywords)
             if invented:
@@ -136,7 +136,7 @@ def run_gather_loop(
 
         # --- agent decides (deterministic fallback when keyless / on error) ---
         diminishing = round_num > 1 and added < config.GATHER_MIN_NEW
-        if use_llm and config.anthropic_enabled():
+        if use_llm and config.llm_enabled():
             try:
                 state = agent.build_evaluation(
                     product,

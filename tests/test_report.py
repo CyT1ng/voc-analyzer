@@ -1,9 +1,18 @@
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from voc_analyzer.analyze import build_analysis
 from voc_analyzer.integrate.schema import Comment
 from voc_analyzer.report import render, suggest
+
+
+@pytest.fixture(autouse=True)
+def _pin_anthropic_provider(monkeypatch):
+    # The fake-anthropic injection only exercises llm.complete's anthropic branch, so pin the
+    # provider regardless of the developer's VOC_LLM_PROVIDER (keeps these tests offline).
+    monkeypatch.setenv("VOC_LLM_PROVIDER", "anthropic")
 
 
 def _analysis():
@@ -54,13 +63,13 @@ def test_suggest_empty_analysis_returns_nothing():
 
 
 def test_suggest_uses_llm_when_available(monkeypatch):
-    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
     monkeypatch.setattr(suggest, "_suggest_llm", lambda analysis: ["LLM idea"])
     assert suggest.suggest(_analysis()) == ["LLM idea"]
 
 
 def test_suggest_falls_back_when_llm_errors(monkeypatch):
-    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
 
     def boom(analysis):
         raise RuntimeError("no network")
@@ -86,13 +95,13 @@ def test_summarize_empty_analysis_returns_blank():
 
 
 def test_summarize_uses_llm_when_available(monkeypatch):
-    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
     monkeypatch.setattr(suggest, "_summarize_llm", lambda analysis: "Overall positive.")
     assert suggest.summarize(_analysis()) == "Overall positive."
 
 
 def test_summarize_omits_on_llm_error(monkeypatch):
-    monkeypatch.setattr(suggest.config, "anthropic_enabled", lambda: True)
+    monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
 
     def boom(analysis):
         raise RuntimeError("no network")
@@ -170,3 +179,30 @@ def test_suggest_llm_sends_phrases_in_payload(monkeypatch):
     suggest._suggest_llm(_analysis())
     sent = captured["messages"][0]["content"]
     assert "negative_phrases" in sent and "positive_quotes" in sent
+
+
+def test_strip_fences_variants():
+    assert suggest.strip_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert suggest.strip_fences('```json {"a": 1}```') == '{"a": 1}'  # single-line fence
+    assert suggest.strip_fences('```\n["x"]\n```\ntrailing prose') == '["x"]'
+    assert suggest.strip_fences('{"a": 1}') == '{"a": 1}'
+
+
+def test_suggest_llm_rejects_non_array_output(monkeypatch):
+    _install_fake_anthropic(monkeypatch, '"one big suggestion as a bare string"')
+    with pytest.raises(ValueError):
+        suggest._suggest_llm(_analysis())
+
+
+def test_suggest_llm_rejects_object_without_suggestions_key(monkeypatch):
+    _install_fake_anthropic(monkeypatch, '{"ideas": ["a", "b"]}')
+    with pytest.raises(ValueError):
+        suggest._suggest_llm(_analysis())
+
+
+def test_suggest_falls_back_when_llm_returns_non_array(monkeypatch):
+    monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
+    _install_fake_anthropic(monkeypatch, '"prose, not a JSON array"')
+    out = suggest.suggest(_analysis())
+    # rule-based fallback, not the bare string exploded into characters
+    assert out and all(len(item) > 1 for item in out)
