@@ -18,7 +18,8 @@ command.
 
 1. **Input** — product name + keyword list
 2. **Search** — per-platform query generation
-3. **Scrape** — per-platform Playwright fetchers, each returns `Comment` records
+3. **Scrape** — per-platform keyless DuckDuckGo (`ddgs`) `site:<domain>` fetchers (no
+   browser/login), each returns `Comment` records (best-effort: `[]` on failure)
 4. **Integrate** — clean, dedupe, normalize into a unified `Comment` schema
 5. **Analyze** — VADER sentiment, keyword extraction, day-bucketed trends
 6. **Insight** — Markdown report + `analysis.json`, with rule-based or

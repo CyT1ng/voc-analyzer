@@ -1,63 +1,57 @@
 # Platform notes
 
-Scraping is done with **Playwright** (headless Chromium) against public pages —
-no API keys. Each scraper in `src/voc_analyzer/scrape/<platform>.py` splits a
-pure `parse(html)` (unit-tested against fixtures in `data/samples/`) from a live
-`fetch(query, limit)` that drives the browser via `scrape/_browser.py`.
+Scraping is done with **DuckDuckGo search** (the keyless [`ddgs`](https://pypi.org/project/ddgs/)
+library) — no browser, no login, no API keys. Each scraper in
+`src/voc_analyzer/scrape/<platform>.py` is a thin `fetch(query, limit)` that runs a
+`site:<domain>` search via the shared engine `scrape/_ddgs.py` and maps the results
+into unified `Comment`s. The live `_ddgs.search` (does IO) is separated from the pure
+`_ddgs.parse` (offline-testable against `data/samples/ddgs_results.json`).
 
-| Platform   | Login required? | Reliability | Entry point |
-|------------|-----------------|-------------|-------------|
-| YouTube    | No              | Good        | `youtube.com/results?search_query=…` → video → comments (rendered HTML) |
-| Reddit     | No              | IP-dependent | `reddit.com/search.json` → post `.json` (browser `get_json`) |
-| TikTok     | Effectively yes | Best-effort | `tiktok.com/search?q=…` |
-| Instagram  | Yes             | Best-effort | `instagram.com/explore/tags/<tag>/` |
-| X (Twitter)| Yes             | Best-effort | `x.com/search?q=…&f=live` |
+| Platform   | Domain searched            | Coverage | Notes |
+|------------|----------------------------|----------|-------|
+| YouTube    | `youtube.com`              | Good     | Video pages are well indexed |
+| Reddit     | `reddit.com`               | Good     | No login / residential IP needed anymore |
+| TikTok     | `tiktok.com`               | Patchy   | DuckDuckGo indexes TikTok unevenly |
+| Instagram  | `instagram.com`            | Patchy   | Many results are login-walled snippets (filtered) |
+| X (Twitter)| `x.com` + `twitter.com`    | Thin     | Individual posts are poorly indexed |
 
-**YouTube** is the reliable, login-free path.
+## Fidelity caveat (important)
 
-**Reddit** uses the public `.json` API (clean structured data, no login) but is
-**rate-limited by IP**: from datacenter / cloud / CI / sandbox IPs every endpoint
-returns HTTP 403 (verified: bare HTTP, the browser request context, and full page
-navigation all 403 from such an IP). From a residential IP it generally works.
-On a block it logs a warning and returns `[]` (treated as best-effort), so the
-run never fails because of it.
+DuckDuckGo returns **search-result snippets** (a title + a 1–2 sentence body), **not
+verbatim user comments or full threads**. Consequences for every `Comment`:
 
-**TikTok / Instagram / X** gate content behind login and anti-bot measures. To
-scrape them, set `VOC_BROWSER_PROFILE` to a Chromium profile already signed in to
-those sites (and usually `VOC_HEADLESS=false`); otherwise they log a warning and
-return nothing rather than failing the run.
+- `author` and `likes` are always `None` (snippets carry no author/engagement).
+- `timestamp` is the scrape time, not when the content was posted (so the trend-over-time
+  section reflects when you ran the tool, not real posting dates).
+- `text` is a page snippet describing the product, which may be an article blurb or a
+  paraphrase rather than a real opinion.
 
-## Per-platform selectors
+So treat the analysis as **directional**: it surfaces what's being said *about* the product
+across these sites, but it is lower-fidelity and lower-volume than reading the actual comment
+threads. Login-/JS-walled boilerplate snippets ("JavaScript is not available", "the site
+owner hides the web page description", …) are dropped in `_ddgs.parse` so they don't pollute
+keywords, but some thin/off-topic snippets will still get through.
 
-### YouTube (`scrape/youtube.py`)
-- Search results → first few `a#video-title` `watch?v=` links.
-- Comments: `ytd-comment-view-model` / `ytd-comment-renderer`; text `#content-text`,
-  author `#author-text`, likes `#vote-count-middle`, time `#published-time-text a`.
-- `source_id` is a stable hash of author+text (no native DOM id).
+## Reliability & rate limits
 
-### Reddit (`scrape/reddit.py`)
-- Uses the public `.json` API, not HTML: `old.reddit.com` now redirects to a
-  JS-rendered React UI with no stable selectors, so we request
-  `search.json` / `{permalink}.json` via `Browser.get_json` (the browser's
-  request context) and parse the JSON directly — cleaner and login-free.
-- `search.json` → `t3` posts' `permalink` → `{permalink}.json` → walk the comment
-  tree (`t1` nodes incl. nested replies; skip `more` placeholders and
-  deleted/removed bodies). `source_id` = `name` (`t1_…`), `likes` = `score`,
-  timestamp from `created_utc`.
-- **IP-blocked from datacenter IPs (403)** — see the reliability note above.
-- Reddit search returns nothing for long multi-word phrases, but `search.build`
-  always includes the bare product name, which matches.
+- `ddgs` is keyless and **rate-limited by DuckDuckGo**. The gather loop fires
+  `platforms × queries` searches per round, so large runs can get throttled; a throttled
+  search returns `[]` (logged as a warning) and the run continues — a dry round just looks
+  low-yield to the gather agent. If you hit throttling, lower `VOC_GATHER_MAX_QUERIES` or
+  `VOC_DDGS_MAX_RESULTS`, or reduce `--max-rounds`.
+- Every `fetch` is best-effort: on any failure it returns `[]` rather than raising, and
+  `scrape/__init__.py::scrape` further isolates each query, so one dry platform never aborts
+  the run.
 
-### TikTok / Instagram / X (best-effort)
-- Selectors target the current public DOM (`[data-e2e=…]` for TikTok,
-  `article[data-testid="tweet"]` / `[data-testid="tweetText"]` for X, comment
-  spans for Instagram) and will drift as the sites change — fix lives in the
-  pure `parse()` and its fixture.
+## Tuning (env vars)
+
+`VOC_DDGS_MAX_RESULTS` (10) · `VOC_DDGS_TIMEOUT_S` (5) · `VOC_DDGS_REGION` (`us-en`) ·
+`VOC_DDGS_BACKEND` (`auto`). See `config.py`.
 
 ## Gotchas
 
-- Selectors break when sites change their markup; the `parse()`/`fetch()` split
-  keeps fixes localized and testable without a browser.
-- Scraping public pages may conflict with a platform's Terms of Service —
-  out of scope to enforce here; use responsibly.
-- Run `uv run playwright install chromium` once before any live scrape.
+- Scraping/indexing public pages may conflict with a platform's Terms of Service — out of
+  scope to enforce here; use responsibly.
+- DuckDuckGo result quality drifts; when a platform suddenly returns little, it's usually
+  index coverage, not a code bug. The `search()`/`parse()` split keeps any parsing fix
+  localized and testable without network.
