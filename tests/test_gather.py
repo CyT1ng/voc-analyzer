@@ -92,12 +92,12 @@ def test_decide_strips_code_fences(monkeypatch):
     assert out["enough"] is True and out["next_queries"] == []
 
 
-def test_decide_uses_sonnet_model(monkeypatch):
+def test_decide_uses_configured_model(monkeypatch):
     captured = _install_fake_anthropic(
         monkeypatch, '{"enough": true, "reason": "", "next_queries": []}'
     )
     agent.decide({"product": "Acme"})
-    assert captured["model"] == "claude-sonnet-4-6"
+    assert captured["model"] == agent.AGENT_MODEL  # env-configurable; not a hardcoded default
 
 
 def test_normalize_decision_is_defensive(monkeypatch):
@@ -124,10 +124,10 @@ def test_propose_initial_queries_parses_bare_array(monkeypatch):
     assert agent.propose_initial_queries("Acme", []) == ["q1", "q2"]
 
 
-def test_propose_initial_queries_uses_sonnet_model(monkeypatch):
+def test_propose_initial_queries_uses_configured_model(monkeypatch):
     captured = _install_fake_anthropic(monkeypatch, '{"queries": ["q"]}')
     agent.propose_initial_queries("Acme", [])
-    assert captured["model"] == "claude-sonnet-4-6"
+    assert captured["model"] == agent.AGENT_MODEL  # env-configurable; not a hardcoded default
 
 
 def test_propose_initial_queries_caps(monkeypatch):
