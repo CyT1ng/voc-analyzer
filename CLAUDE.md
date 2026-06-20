@@ -15,6 +15,7 @@ improvement suggestions. Single CLI command drives the whole pipeline.
 uv sync                       # runtime deps (includes `ddgs`; no browser to install)
 uv sync --extra dev           # + pytest, pytest-cov, ruff
 uv sync --extra llm           # + anthropic (only needed for the Anthropic LLM provider)
+uv sync --extra web           # + fastapi, uvicorn (the web API)
 
 uv run ruff check .           # lint (add --fix to autofix)
 uv run pytest                 # unit tests — OFFLINE, no network (integration deselected by default)
@@ -27,6 +28,10 @@ uv run voc-analyzer run -p "Sony WH-1000XM5" -k "noise cancelling"   # all platf
 uv run voc-analyzer run -p "Sony WH-1000XM5" -P reddit --max-rounds 1
 uv run voc-analyzer run -p "Acme Buds" --from-raw data/samples/comments.jsonl   # offline demo, no scraping
 uv run voc-analyzer run ... --no-llm        # force rule-based suggestions
+
+# Web app (FastAPI + React SPA)
+uv run voc-analyzer-web                      # API on :8000 (dev); set VOC_WEB_STATIC_DIR to also serve the SPA
+cd frontend && npm install && npm run dev    # SPA on :5173 (proxies /api → :8000)
 ```
 
 Reports are written to `data/processed/report.md` + `analysis.json` (override with `--output-dir`).
@@ -85,6 +90,23 @@ single pass, and `--from-raw` skips gathering entirely.
   `openai` (a plain `httpx` POST to any OpenAI-compatible `/chat/completions` — how free models
   like Qwen are reached; keyless local servers work too — `llm_enabled()` is True for `openai`
   regardless of key). Raises on error; callers own the graceful fallback.
+
+### Front ends (CLI + web share one core)
+
+`_pipeline.py::run_analysis(...)` is the shared orchestration (gather/demo → analyze → enrich
+with summary+suggestions), returning an `AnalysisRun`. **Both `cli.py::run` and the web API call
+it** — keep new pipeline wiring here, not duplicated. Progress flows through the `on_message`
+hook (the CLI passes `console.print`; the web passes a callback that strips rich markup and
+pushes to an SSE stream).
+
+`web/` is a **FastAPI** app (`uv sync --extra web`, run via `voc-analyzer-web`): `POST
+/api/analyses` starts an in-memory job that runs `run_analysis` in a worker thread
+(`asyncio.to_thread`); progress streams over SSE (`GET …/progress`) via
+`loop.call_soon_threadsafe` into an `asyncio.Queue`; the `analysis` dict + `report.md`/
+`analysis.json` are served from `GET …/{id}` and the download routes. `demo:true` uses the
+offline sample path (`tests/test_web.py` is fully offline through it). Jobs are process-local
+with no TTL — single uvicorn worker only (v1). The React SPA lives in `frontend/`; in production
+FastAPI serves its built `dist/` (set `VOC_WEB_STATIC_DIR`). **LLM keys stay server-side.**
 
 ### Cross-file invariant
 

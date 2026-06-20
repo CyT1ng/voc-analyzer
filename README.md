@@ -92,10 +92,40 @@ No API key needed for a local server. Quality is bounded by the model your hardw
 
 Set `ANTHROPIC_API_KEY` and `uv sync --extra llm`; leave `VOC_LLM_PROVIDER` unset.
 
+## Web app
+
+A browser UI (FastAPI backend + React SPA) wraps the same pipeline: enter a product, watch
+live progress, and read a dashboard (sentiment, keywords, trends, quotes, LLM summary &
+suggestions) with report downloads. LLM keys stay server-side (`.env`) — never entered in the
+browser. There's a **Demo mode** that analyzes the bundled sample with no scraping.
+
+**Dev** (two processes — Vite proxies `/api` to the backend):
+
+```bash
+uv sync --extra web --extra dev
+uv run voc-analyzer-web                 # FastAPI on http://localhost:8000
+cd frontend && npm install && npm run dev   # SPA on http://localhost:5173
+```
+
+**Production** (one process serves UI + API):
+
+```bash
+cd frontend && npm run build            # → frontend/dist
+VOC_WEB_STATIC_DIR=frontend/dist uv run voc-analyzer-web   # http://localhost:8000
+```
+
+**Docker** (multi-stage build → single image):
+
+```bash
+docker build -t voc-analyzer .
+docker run -p 8000:8000 --env-file .env voc-analyzer
+```
+
 ## Layout
 
 ```
-src/voc_analyzer/   # main package, one folder per pipeline stage
+src/voc_analyzer/   # main package, one folder per pipeline stage (incl. web/ = FastAPI API)
+frontend/           # React + Vite web UI (calls the FastAPI backend)
 docs/               # design docs and per-platform notes
 tests/              # mirrors src/ structure
 data/samples/       # tiny committed sample data + DDGS fixture
