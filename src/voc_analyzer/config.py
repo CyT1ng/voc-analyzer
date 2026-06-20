@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -91,6 +92,75 @@ def llm_enabled() -> bool:
     if llm_provider() == "openai":
         return True
     return bool(llm_api_key())
+
+
+# A few sensible model choices per provider (used to populate the web UI's model picker).
+_DEFAULT_MODELS: dict[str, list[str]] = {
+    "anthropic": ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"],
+}
+
+
+def llm_default_model() -> str:
+    """The report model id used when a run doesn't pick one (VOC_LLM_MODEL)."""
+    return os.getenv("VOC_LLM_MODEL", "claude-sonnet-4-6")
+
+
+def llm_models() -> list[str]:
+    """Curated model ids for the UI picker (offline — no network).
+
+    Set ``VOC_LLM_MODELS`` (comma-separated) to curate the list. The configured default is
+    always included first. ``llm_available_models`` expands this with the provider's live catalog.
+    """
+    explicit = os.getenv("VOC_LLM_MODELS")
+    if explicit:
+        models = [m.strip() for m in explicit.split(",") if m.strip()]
+    else:
+        models = list(_DEFAULT_MODELS.get(llm_provider(), []))
+    default = llm_default_model()
+    return [default, *[m for m in models if m != default]]
+
+
+_models_cache: tuple[float, list[str]] | None = None
+
+
+def llm_available_models() -> list[str]:
+    """Full model list from the OpenAI-compatible provider's ``/models`` endpoint (cached 10 min).
+
+    Falls back to the curated ``llm_models()`` for Anthropic or on any fetch error, so callers
+    always get a usable list. This is the only place that hits the network for model discovery.
+    """
+    global _models_cache
+    if llm_provider() != "openai":
+        return llm_models()
+    now = time.time()
+    if _models_cache is not None and now - _models_cache[0] < 600:
+        return _models_cache[1]
+    models = _fetch_openai_models()
+    _models_cache = (now, models)
+    return models
+
+
+def _fetch_openai_models() -> list[str]:
+    import httpx
+
+    try:
+        url = LLM_BASE_URL.rstrip("/") + "/models"
+        headers = {}
+        key = llm_api_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        resp = httpx.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        ids = sorted(
+            {m["id"] for m in resp.json().get("data", []) if isinstance(m, dict) and m.get("id")}
+        )
+        if not ids:
+            return llm_models()
+        default = llm_default_model()
+        return [default, *[i for i in ids if i != default]]
+    except Exception as exc:
+        log.warning("could not fetch model list (%s); using the configured list", exc)
+        return llm_models()
 
 
 # Back-compat alias for the pre-provider-abstraction name.
