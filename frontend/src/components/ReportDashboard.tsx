@@ -229,11 +229,11 @@ function KeywordsCard({ result, ct }: { result: AnalysisResult; ct: ChartTheme }
   const top = result.top_keywords.slice(0, 10).map(([word, count]) => ({ word, count }));
   return (
     <Section title="Top keywords">
-      <div className="h-60">
+      <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={top} layout="vertical" margin={{ left: 8 }}>
             <XAxis type="number" allowDecimals={false} tick={{ fill: ct.tick, fontSize: 12 }} tickLine={false} axisLine={false} />
-            <YAxis type="category" dataKey="word" width={88} tick={{ fill: ct.tick, fontSize: 12 }} tickLine={false} axisLine={false} />
+            <YAxis type="category" dataKey="word" width={88} interval={0} tick={{ fill: ct.tick, fontSize: 12 }} tickLine={false} axisLine={false} />
             <Tooltip
               contentStyle={ct.tooltipContentStyle}
               itemStyle={ct.tooltipItemStyle}
