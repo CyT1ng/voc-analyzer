@@ -62,7 +62,8 @@ def run(
                 on_message=console.print,
             )
         except OSError as exc:
-            raise typer.BadParameter(f"cannot read --from-raw file: {exc}") from exc
+            console.print(f"[red]Error:[/red] cannot read --from-raw file: {exc}")
+            raise typer.Exit(code=2) from exc
     else:
         console.print(f"[bold]Platforms:[/bold] {', '.join(platforms)}")
         run_result = _pipeline.run_analysis(
