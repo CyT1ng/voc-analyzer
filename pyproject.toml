@@ -24,9 +24,14 @@ dev = [
 llm = [
     "anthropic>=0.40",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
 
 [project.scripts]
 voc-analyzer = "voc_analyzer.cli:app"
+voc-analyzer-web = "voc_analyzer.web.api:main"
 
 [build-system]
 requires = ["hatchling"]

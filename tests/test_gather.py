@@ -443,7 +443,7 @@ def test_scrape_isolates_failures_and_reports():
 
 # --- CLI wiring ---
 def test_run_uses_gather_loop(tmp_path, monkeypatch):
-    from voc_analyzer import cli
+    from voc_analyzer import _pipeline
 
     analysis = build_analysis([_comment("k1"), _comment("k2")], "Acme")
 
@@ -457,7 +457,8 @@ def test_run_uses_gather_loop(tmp_path, monkeypatch):
             controller="agent",
         )
 
-    monkeypatch.setattr(cli, "run_gather_loop", fake_loop)
+    # The gather loop is now invoked from the shared _pipeline core, not cli directly.
+    monkeypatch.setattr(_pipeline, "run_gather_loop", fake_loop)
     result = runner.invoke(
         app, ["run", "-p", "Acme", "-P", "youtube", "--output-dir", str(tmp_path), "--no-llm"]
     )

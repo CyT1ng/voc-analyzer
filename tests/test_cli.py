@@ -1,12 +1,29 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from voc_analyzer.cli import app
 
 runner = CliRunner()
 SAMPLES = Path(__file__).resolve().parents[1] / "data" / "samples"
+
+
+@pytest.fixture(autouse=True)
+def _wide_terminal(monkeypatch):
+    # Render rich/Typer output wide so error-message assertions don't depend on the headless
+    # terminal width in CI (a narrow panel word-wraps phrases like "cannot read --from-raw file").
+    monkeypatch.setenv("COLUMNS", "200")
+
+
+def _all_output(result) -> str:
+    """Combined stdout+stderr — Typer renders BadParameter errors to stderr, which `result.output`
+    (stdout only) excludes in CI."""
+    out = result.output
+    if result.stderr_bytes:
+        out += result.stderr
+    return out
 
 
 def test_version_command():
@@ -90,7 +107,7 @@ def test_run_from_raw_missing_file_fails_cleanly(tmp_path):
         ["run", "-p", "X", "--from-raw", str(tmp_path / "nope.jsonl"), "--no-llm"],
     )
     assert result.exit_code != 0
-    assert "cannot read --from-raw file" in result.output
+    assert "cannot read --from-raw file" in _all_output(result)
 
 
 def test_run_from_raw_reports_platforms_from_data(tmp_path):
