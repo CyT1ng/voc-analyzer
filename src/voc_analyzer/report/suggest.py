@@ -59,19 +59,19 @@ _SUMMARY_SYSTEM = (
 )
 
 
-def suggest(analysis: dict, use_llm: bool = True) -> list[str]:
+def suggest(analysis: dict, use_llm: bool = True, model: str | None = None) -> list[str]:
     """Return improvement suggestions for the given analysis dict."""
     if analysis.get("totals", {}).get("comments", 0) == 0:
         return []
     if use_llm and config.llm_enabled():
         try:
-            return _suggest_llm(analysis)
+            return _suggest_llm(analysis, model)
         except Exception as exc:  # network, parsing, missing dep — degrade gracefully
             log.warning("LLM suggestions failed (%s); using rule-based fallback", exc)
     return _suggest_rule_based(analysis)
 
 
-def summarize(analysis: dict, use_llm: bool = True) -> str:
+def summarize(analysis: dict, use_llm: bool = True, model: str | None = None) -> str:
     """Return an LLM-written executive summary, or ``""`` when unavailable.
 
     Unlike suggestions there is no rule-based fallback — a narrative summary is
@@ -82,7 +82,7 @@ def summarize(analysis: dict, use_llm: bool = True) -> str:
         return ""
     if use_llm and config.llm_enabled():
         try:
-            return _summarize_llm(analysis)
+            return _summarize_llm(analysis, model)
         except Exception as exc:  # network, parsing, missing dep — omit gracefully
             log.warning("LLM summary failed (%s); omitting narrative summary", exc)
     return ""
@@ -184,7 +184,7 @@ def strip_fences(text: str) -> str:
     return text.strip()
 
 
-def _suggest_llm(analysis: dict) -> list[str]:
+def _suggest_llm(analysis: dict, model: str | None = None) -> list[str]:
     from voc_analyzer.llm import complete
 
     user = (
@@ -192,7 +192,7 @@ def _suggest_llm(analysis: dict) -> list[str]:
         "of improvement suggestions.\n\n"
         + json.dumps(payload(analysis), ensure_ascii=False, indent=2)
     )
-    text = complete(_SYSTEM, user, model=MODEL, max_tokens=2048)
+    text = complete(_SYSTEM, user, model=model or MODEL, max_tokens=2048)
     data = json.loads(strip_fences(text))
     if isinstance(data, dict):
         data = data.get("suggestions")
@@ -203,11 +203,11 @@ def _suggest_llm(analysis: dict) -> list[str]:
     return [str(item) for item in data][:MAX_SUGGESTIONS]
 
 
-def _summarize_llm(analysis: dict) -> str:
+def _summarize_llm(analysis: dict, model: str | None = None) -> str:
     from voc_analyzer.llm import complete
 
     user = (
         "Here is the Voice-of-Customer analysis. Write the executive "
         "summary.\n\n" + json.dumps(payload(analysis), ensure_ascii=False, indent=2)
     )
-    return complete(_SUMMARY_SYSTEM, user, model=MODEL, max_tokens=1024).strip()
+    return complete(_SUMMARY_SYSTEM, user, model=model or MODEL, max_tokens=1024).strip()

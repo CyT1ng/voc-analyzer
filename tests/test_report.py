@@ -64,14 +64,14 @@ def test_suggest_empty_analysis_returns_nothing():
 
 def test_suggest_uses_llm_when_available(monkeypatch):
     monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
-    monkeypatch.setattr(suggest, "_suggest_llm", lambda analysis: ["LLM idea"])
+    monkeypatch.setattr(suggest, "_suggest_llm", lambda analysis, model=None: ["LLM idea"])
     assert suggest.suggest(_analysis()) == ["LLM idea"]
 
 
 def test_suggest_falls_back_when_llm_errors(monkeypatch):
     monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
 
-    def boom(analysis):
+    def boom(analysis, model=None):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(suggest, "_suggest_llm", boom)
@@ -96,14 +96,14 @@ def test_summarize_empty_analysis_returns_blank():
 
 def test_summarize_uses_llm_when_available(monkeypatch):
     monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
-    monkeypatch.setattr(suggest, "_summarize_llm", lambda analysis: "Overall positive.")
+    monkeypatch.setattr(suggest, "_summarize_llm", lambda analysis, model=None: "Overall positive.")
     assert suggest.summarize(_analysis()) == "Overall positive."
 
 
 def test_summarize_omits_on_llm_error(monkeypatch):
     monkeypatch.setattr(suggest.config, "llm_enabled", lambda: True)
 
-    def boom(analysis):
+    def boom(analysis, model=None):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(suggest, "_summarize_llm", boom)
@@ -179,6 +179,12 @@ def test_suggest_llm_sends_phrases_in_payload(monkeypatch):
     suggest._suggest_llm(_analysis())
     sent = captured["messages"][0]["content"]
     assert "negative_phrases" in sent and "positive_quotes" in sent
+
+
+def test_suggest_llm_uses_override_model(monkeypatch):
+    captured = _install_fake_anthropic(monkeypatch, '["x"]')
+    suggest._suggest_llm(_analysis(), "qwen/some-model")
+    assert captured["model"] == "qwen/some-model"  # request override wins over the env default
 
 
 def test_strip_fences_variants():

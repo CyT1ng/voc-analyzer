@@ -3,40 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
-from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from voc_analyzer import analyze, config
-from voc_analyzer.gather import run_gather_loop
-from voc_analyzer.integrate.pipeline import integrate
-from voc_analyzer.integrate.schema import Comment
-from voc_analyzer.report import render, suggest
+from voc_analyzer import _pipeline, config
+from voc_analyzer.report import render
 from voc_analyzer.scrape import FETCHERS
 
 app = typer.Typer(help="Voice-of-Customer analyzer CLI")
 console = Console()
-
-
-def _load_raw(path: Path) -> list[Comment]:
-    """Load unified Comments from a JSONL file (one Comment per line).
-
-    Malformed lines are skipped with a warning rather than aborting the run.
-    """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise typer.BadParameter(f"cannot read --from-raw file: {exc}") from exc
-    comments: list[Comment] = []
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            comments.append(Comment.model_validate_json(line))
-        except ValidationError:
-            console.print(f"[yellow]warn[/yellow] {path.name}:{lineno}: skipping malformed line")
-    return comments
 
 
 @app.command()
@@ -77,33 +52,37 @@ def run(
 
     if from_raw is not None:
         console.print(f"[bold]Source:[/bold] {from_raw}")
-        comments = integrate([_load_raw(from_raw)])
-        # Report the platforms actually present in the file, not the scrape defaults.
-        analysis = analyze.build_analysis(comments, product, keywords)
+        try:
+            run_result = _pipeline.run_analysis(
+                product,
+                keywords,
+                platforms,
+                raw_path=from_raw,
+                use_llm=not no_llm,
+                on_message=console.print,
+            )
+        except OSError as exc:
+            raise typer.BadParameter(f"cannot read --from-raw file: {exc}") from exc
     else:
         console.print(f"[bold]Platforms:[/bold] {', '.join(platforms)}")
-        result = run_gather_loop(
+        run_result = _pipeline.run_analysis(
             product,
             keywords,
             platforms,
-            limit,
+            limit=limit,
             use_llm=not no_llm,
             max_rounds=max_rounds,
             target=target,
             max_total=max_total,
             on_message=console.print,
         )
-        comments = result.comments
-        analysis = result.analysis  # computed inside the loop; no recompute
         console.print(
-            f"[bold]Gathering:[/bold] {result.rounds} round(s) — "
-            f"stopped: {result.stop_reason} (by {result.controller})"
+            f"[bold]Gathering:[/bold] {run_result.rounds} round(s) — "
+            f"stopped: {run_result.stop_reason} (by {run_result.controller})"
         )
 
-    console.print(f"[bold]Collected:[/bold] {len(comments)} unique comments")
-
-    analysis["summary"] = suggest.summarize(analysis, use_llm=not no_llm)
-    analysis["suggestions"] = suggest.suggest(analysis, use_llm=not no_llm)
+    analysis = run_result.analysis
+    console.print(f"[bold]Collected:[/bold] {run_result.comment_count} unique comments")
     md_path, json_path = render.write_report(analysis, out_dir)
 
     _print_summary(analysis)
